@@ -1,0 +1,26 @@
+﻿{
+  "manifest_version": 3,
+  "name": "Noted Chrome Extension - Enhanced",
+  "version": "2.0",
+  "description": "A Chrome extension for capturing complete web pages with all resources",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage",
+    "downloads",
+    "webRequest",
+    "pageCapture",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Noted - Enhanced Capture"
+  }
+}

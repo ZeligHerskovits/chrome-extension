@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Noted</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <!-- Login Page -->
+    <div id="login-page" class="login-container">
+      <div class="login-card">
+        <h1 class="login-title">Login</h1>
+
+        <div class="login-form" id="login-form">
+          <div class="input-group">
+            <label class="input-label">Email Address</label>
+            <input
+              type="email"
+              class="form-input"
+              placeholder="Enter your Email Address"
+              id="email-input"
+            />
+          </div>
+
+          <div class="input-group">
+            <label class="input-label">Password</label>
+            <input
+              type="password"
+              class="form-input"
+              placeholder="Password"
+              id="password-input"
+            />
+          </div>
+
+          <button class="login-button" id="login-btn">Login</button>
+        </div>
+
+        <!-- OTP Verification Form (hidden initially) -->
+        <div class="login-form" id="otp-form" style="display: none">
+          <div class="otp-message">
+            <p>We've sent a 6-digit code to your email.</p>
+            <p>Please check your inbox and enter the code below.</p>
+          </div>
+
+          <div class="input-group">
+            <label class="input-label">OTP Code</label>
+            <input
+              type="text"
+              class="form-input"
+              placeholder="Enter 6-digit code"
+              id="otp-input"
+              maxlength="6"
+            />
+          </div>
+
+          <button class="login-button" id="verify-otp-btn">Verify OTP</button>
+          <button class="back-button" id="back-to-login-btn">
+            Back to Login
+          </button>
+        </div>
+
+        <div class="signup-link">
+          <span>Doesn't have an account?</span>
+          <a href="#" class="signup-text">Sign up</a>
+        </div>
+
+        <div class="login-footer">
+          <div class="footer-divider"></div>
+          <div class="footer-links">
+            <a href="#" class="footer-link">Terms</a>
+            <span class="footer-separator">|</span>
+            <a href="#" class="footer-link">Privacy</a>
+            <span class="footer-separator">|</span>
+            <a href="#" class="footer-link">Help</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main App Page (hidden initially) -->
+    <div id="main-page" class="main-container" style="display: none">
+      <!-- Top Header Bar -->
+      <div class="top-header">
+        <div class="menu-icon" id="menu-toggle">☰</div>
+        <div class="logo">
+          <div class="logo-icon">🧠</div>
+          <span class="logo-text">Noted</span>
+        </div>
+        <div class="header-actions">
+          <div class="action-icon" title="Share">↗️</div>
+          <div class="action-icon" title="Next">▶️</div>
+        </div>
+      </div>
+
+      <!-- Side Navigation Menu -->
+      <div class="side-menu" id="side-menu">
+        <div class="menu-content">
+          <div class="menu-item" data-page="home">
+            <div class="menu-icon">🏠</div>
+            <span class="menu-text">Home</span>
+          </div>
+          <div class="menu-item" data-page="clients">
+            <div class="menu-icon">👤</div>
+            <span class="menu-text">Clients</span>
+          </div>
+          <div class="menu-item" data-page="profile">
+            <div class="menu-icon">👤</div>
+            <span class="menu-text">My Profile</span>
+          </div>
+          <div class="menu-item" data-page="settings">
+            <div class="menu-icon">⚙️</div>
+            <span class="menu-text">Settings</span>
+          </div>
+          <div class="menu-item" id="sign-out-btn">
+            <div class="menu-icon">↪️</div>
+            <span class="menu-text">Sign-out</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Menu Overlay -->
+      <div class="menu-overlay" id="menu-overlay"></div>
+
+      <!-- Main Content Area -->
+      <div class="main-content" id="main-content">
+        <!-- Home Page Content -->
+        <div class="page-content" id="home-page">
+          <div class="content-header">
+            <h2>Welcome to Noted</h2>
+            <p>Your EMR capture dashboard</p>
+          </div>
+
+          <div class="form-container">
+            <!-- Session Type -->
+            <div class="input-group">
+              <label class="input-label">Session Type</label>
+              <div class="input-wrapper">
+                <input
+                  type="text"
+                  class="form-input"
+                  placeholder="Enter session type"
+                />
+                <div class="dropdown-arrow"></div>
+              </div>
+            </div>
+
+            <!-- Documentation Method -->
+            <div class="input-group">
+              <label class="input-label">Documentation Method</label>
+              <div class="input-wrapper">
+                <input
+                  type="text"
+                  class="form-input"
+                  placeholder="Documentation Method"
+                />
+                <div class="dropdown-arrow"></div>
+              </div>
+            </div>
+
+            <!-- EMR Type -->
+            <div class="input-group">
+              <label class="input-label">EMR Type</label>
+              <div class="input-wrapper">
+                <select class="form-input" id="emr-type">
+                  <option value="">Select EMR Type</option>
+                  <option value="epic">Epic</option>
+                  <option value="cerner">Cerner</option>
+                  <option value="allscripts">Allscripts</option>
+                  <option value="athena">Athena</option>
+                  <option value="nextgen">NextGen</option>
+                  <option value="eclinicalworks">eClinicalWorks</option>
+                  <option value="other">Other</option>
+                </select>
+                <div class="dropdown-arrow"></div>
+              </div>
+            </div>
+
+            <!-- Send Button -->
+            <button class="send-button">Send EMR Request</button>
+          </div>
+        </div>
+
+        <!-- Clients Page Content -->
+        <div class="page-content" id="clients-page" style="display: none">
+          <!-- Clients Header - Figma Style -->
+          <div class="clients-header-figma">
+            <div class="clients-title-figma">
+              <span class="back-arrow-figma">‹</span>
+              <span class="clients-text">Clients</span>
+            </div>
+            <div class="add-client-btn-figma" id="add-client-btn">
+              <span class="plus-icon">+</span>
+            </div>
+          </div>
+
+          <!-- Clients List -->
+          <div class="clients-list-figma" id="clients-list">
+            <!-- Loading state -->
+            <div class="loading-state" id="clients-loading">
+              <p>Loading clients...</p>
+            </div>
+
+            <!-- Empty state -->
+            <div class="empty-state" id="clients-empty" style="display: none">
+              <p>No clients found</p>
+            </div>
+
+            <!-- Client items will be populated here -->
+          </div>
+        </div>
+
+        <!-- Profile Page Content -->
+        <div class="page-content" id="profile-page" style="display: none">
+          <div class="content-header">
+            <h2>My Profile</h2>
+            <p>Manage your account settings</p>
+          </div>
+
+          <!-- Profile Header -->
+          <div class="profile-header">
+            <div class="profile-avatar-large">
+              <span id="profile-avatar-text">ZH</span>
+            </div>
+            <h3 class="profile-name" id="profile-name">Zelig Herskovits</h3>
+            <p class="profile-email" id="profile-email">zeligh4762@gmail.com</p>
+          </div>
+
+          <!-- Three Profile Sections -->
+          <div class="profile-sections">
+            <!-- Personal Info Section -->
+            <div class="profile-section-card">
+              <div class="section-header">
+                <div class="section-title">
+                  <span class="section-icon">👤</span>
+                  <span>Personal Info</span>
+                </div>
+                <div class="section-actions">
+                  <button class="edit-btn" id="edit-personal-info-btn">✏️</button>
+                  <button class="delete-btn">🗑️</button>
+                </div>
+              </div>
+              
+              <div class="section-content" id="personal-info-content">
+                <div class="detail-item">
+                  <span class="detail-label">Mobile</span>
+                  <span class="detail-value" id="profile-mobile">22</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Company</span>
+                  <span class="detail-value" id="profile-company">Mesikim</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Password</span>
+                  <span class="detail-value">
+                    <span id="profile-password">********</span>
+                    <a href="#" class="forgot-password-link">Forgot password?</a>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Active</span>
+                  <span class="detail-value">
+                    <span class="status-badge active" id="profile-status">Active</span>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">User Type</span>
+                  <span class="detail-value" id="profile-user-type">Healthcare</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Session Instructions</span>
+                  <span class="detail-value" id="profile-session-instructions">Test test test test te...</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- EMR Info Section -->
+            <div class="profile-section-card">
+              <div class="section-header">
+                <div class="section-title">
+                  <span class="section-icon">🖥️</span>
+                  <span>EMR Info</span>
+                </div>
+                <div class="section-actions">
+                  <button class="edit-btn" id="edit-emr-info-btn">✏️</button>
+                </div>
+              </div>
+              
+              <div class="section-content" id="emr-info-content">
+                <div class="detail-item">
+                  <span class="detail-label">EMR System</span>
+                  <span class="detail-value">
+                    <a href="#" class="emr-link" id="profile-emr-system">MyEnvolve + Lets see</a>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Coping Skills</span>
+                  <span class="detail-value">
+                    <div class="badges-container" id="profile-coping-skills">
+                      <span class="info-badge">Test Coping Skill ℹ️</span>
+                      <span class="info-badge">Test Coping Skill2 ℹ️</span>
+                    </div>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Clinical Specialties</span>
+                  <span class="detail-value">
+                    <div class="badges-container" id="profile-clinical-specialties">
+                      <span class="info-badge">Test Clinical Specialty ℹ️</span>
+                    </div>
+                  </span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Type Writing</span>
+                  <span class="detail-value" id="profile-type-writing">Soft</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Company Info Section -->
+            <div class="profile-section-card">
+              <div class="section-header">
+                <div class="section-title">
+                  <span class="section-icon">🏢</span>
+                  <span>Company Info</span>
+                </div>
+                <div class="section-actions">
+                  <button class="edit-btn" id="edit-company-info-btn">✏️</button>
+                </div>
+              </div>
+              
+              <div class="section-content" id="company-info-content">
+                <div class="detail-item">
+                  <span class="detail-label">Name</span>
+                  <span class="detail-value" id="profile-company-name">Mesikim</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">EMR</span>
+                  <span class="detail-value" id="profile-company-emr">Other</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Industry</span>
+                  <span class="detail-value" id="profile-company-industry">Healthcare</span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Address</span>
+                  <span class="detail-value" id="profile-company-address"></span>
+                </div>
+                <div class="detail-item">
+                  <span class="detail-label">Active</span>
+                  <span class="detail-value">
+                    <span class="status-badge active" id="profile-company-status">Active</span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings Page Content -->
+        <div class="page-content" id="settings-page" style="display: none">
+          <div class="content-header">
+            <h2>Settings</h2>
+            <p>Configure your preferences</p>
+          </div>
+          <div class="placeholder-content">
+            <p>Settings content will be displayed here</p>
+          </div>
+        </div>
+
+        <!-- Client Detail Page Content -->
+        <div class="page-content" id="client-detail-page" style="display: none">
+          <!-- Client Header with Tabs -->
+          <div class="client-header">
+            <div class="client-header-info">
+              <div class="back-arrow-tab">‹</div>
+              <div class="client-name-header" id="client-name-header">Client Name</div>
+              <div class="client-sessions-header" id="client-sessions-header">0 Sessions</div>
+            </div>
+            <div class="client-tabs">
+              <div class="tab-button active" id="client-info-tab" data-tab="client-info">
+                Client Info
+              </div>
+              <div class="tab-button" id="sessions-tab" data-tab="sessions">
+                Sessions
+              </div>
+            </div>
+          </div>
+
+          <!-- Client Info Tab Content -->
+          <div class="tab-content active" id="client-info-content">
+            <!-- Client Detected Banner -->
+          <div class="client-detected-banner">
+            <div class="banner-content">
+              <div class="banner-icon">✓</div>
+              <span class="banner-text">Client Detected</span>
+            </div>
+          </div>
+
+          <!-- Client Detail Card -->
+          <div class="detail-card">
+            <h2 class="card-title">Client Detail</h2>
+
+            <div class="client-profile">
+              <div class="client-avatar-large">
+                <span id="client-avatar-text">CW</span>
+              </div>
+              <div class="client-info-large">
+                <h3 class="client-name-large" id="client-name">
+                  Cameron Williamson
+                </h3>
+                <p class="client-sessions-large" id="client-sessions">
+                  23 Sessions
+                </p>
+              </div>
+            </div>
+
+            <div class="client-details">
+              <div class="detail-item">
+                <span class="detail-label">Date of Birth</span>
+                <span class="detail-value" id="client-dob">Not specified</span>
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Phone</span>
+                <span class="detail-value phone-number" id="client-phone"
+                  >Not specified</span
+                >
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Email</span>
+                <span class="detail-value" id="client-location"
+                  >Not specified</span
+                >
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Address</span>
+                <span class="detail-value" id="client-address"
+                  >Not specified</span
+                >
+              </div>
+            </div>
+
+            <!-- Collateral Section -->
+            <div class="collateral-section">
+              <div class="detail-item">
+                <span class="detail-label">Collateral First Name</span>
+                <span class="detail-value" id="client-collateral-first"
+                  >Not specified</span
+                >
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Collateral Last Name</span>
+                <span class="detail-value" id="client-collateral-last"
+                  >Not specified</span
+                >
+              </div>
+              <div class="detail-item">
+                <span class="detail-label">Collateral Email</span>
+                <span class="detail-value" id="client-collateral-email"
+                  >Not specified</span
+                >
+              </div>
+            </div>
+            </div>
+          </div>
+
+          <!-- Client History Card (only shown in Client Info tab) -->
+          <div class="detail-card client-history-card" id="client-history-card">
+            <h2 class="card-title">Client History</h2>
+
+            <div class="history-content">
+              <p class="history-message">
+                No Client History Found please add the client's history to
+                ensure personalized support and continuity across sessions.
+              </p>
+
+            <button class="add-history-btn" id="add-history-btn">
+              Add History
+            </button>
+          </div>
+        </div>
+          </div>
+
+          <!-- Sessions Tab Content -->
+          <div class="tab-content" id="sessions-content">
+            <div class="sessions-list" id="sessions-list">
+              <!-- Sessions will be loaded here -->
+              <div class="session-item" data-session-id="1">
+                <div class="session-header">
+                  <h3 class="session-name">Session Name</h3>
+                  <div class="session-menu">⋯</div>
+                </div>
+                <div class="session-details">
+                  <div class="session-date">10/6/13</div>
+                  <div class="session-times">
+                    <span>Time in: 07:00 A.M</span>
+                    <span>Time out: 09:00 A.M</span>
+                  </div>
+                  <div class="session-info">
+                    <span>Length: 120</span>
+                    <span>Service Type: PREVOC</span>
+                  </div>
+                  <button class="view-session-btn" data-session-id="1">View Session</button>
+                </div>
+              </div>
+              
+              <div class="session-item" data-session-id="2">
+                <div class="session-header">
+                  <h3 class="session-name">Session Name 2</h3>
+                  <div class="session-menu">⋯</div>
+                </div>
+                <div class="session-details">
+                  <div class="session-date">10/7/13</div>
+                  <div class="session-times">
+                    <span>Time in: 08:00 A.M</span>
+                    <span>Time out: 10:00 A.M</span>
+                  </div>
+                  <div class="session-info">
+                    <span>Length: 120</span>
+                    <span>Service Type: CBT</span>
+                  </div>
+                  <button class="view-session-btn" data-session-id="2">View Session</button>
+                </div>
+              </div>
+              
+              <div class="session-item" data-session-id="3">
+                <div class="session-header">
+                  <h3 class="session-name">Session Name 3</h3>
+                  <div class="session-menu">⋯</div>
+                </div>
+                <div class="session-details">
+                  <div class="session-date">10/8/13</div>
+                  <div class="session-times">
+                    <span>Time in: 09:00 A.M</span>
+                    <span>Time out: 11:00 A.M</span>
+                  </div>
+                  <div class="session-info">
+                    <span>Length: 120</span>
+                    <span>Service Type: DBT</span>
+                  </div>
+                  <button class="view-session-btn" data-session-id="3">View Session</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Session Detail Page Content -->
+        <div class="page-content" id="session-detail-page" style="display: none">
+          <!-- Session Header -->
+          <div class="session-header">
+            <div class="session-header-info">
+              <div class="back-arrow-session">‹</div>
+              <div class="session-title-header">Session Details</div>
+            </div>
+          </div>
+
+          <!-- Session Tabs -->
+          <div class="session-tabs-container">
+            <div class="session-tabs">
+              <div class="tab-button active" id="session-info-tab" data-tab="session-info">
+                Session Info
+              </div>
+              <div class="tab-button" id="session-activity-tab" data-tab="session-activity">
+                AI Notes
+              </div>
+            </div>
+          </div>
+
+          <!-- Session Detected Banner -->
+          <div class="session-detected-banner">
+            <div class="banner-content">
+              <div class="banner-icon">✓</div>
+              <span class="banner-text">Session Detected</span>
+            </div>
+          </div>
+
+
+          <!-- Session Info Tab Content -->
+          <div class="tab-content active" id="session-info-content">
+            <!-- Session Details Card -->
+            <div class="detail-card">
+              <h2 class="card-title">Session Details</h2>
+              
+              <div class="session-detail-item">
+                <span class="detail-label">Client</span>
+                <span class="detail-value" id="session-client-name">Cameron Williamson</span>
+              </div>
+              
+              <div class="session-detail-item">
+                <span class="detail-label">Type</span>
+                <span class="detail-value" id="session-type">Individual Therapy</span>
+              </div>
+              
+              <div class="session-detail-item">
+                <span class="detail-label">Instructions</span>
+                <span class="detail-value" id="session-instructions">Session instructions here...</span>
+              </div>
+              
+              <div class="session-detail-item">
+                <span class="detail-label">Created</span>
+                <span class="detail-value" id="session-created">10/6/13 04:02 am</span>
+              </div>
+            </div>
+
+
+          </div>
+
+          <!-- AI Notes Tab Content -->
+          <div class="tab-content" id="session-activity-content">
+            <div class="ai-notes-content">
+              <!-- Methods Section -->
+              <div class="ai-notes-section">
+                <h3 class="ai-notes-heading">Methods</h3>
+                <div class="ai-notes-text-container">
+                  <p class="ai-notes-text" id="ai-notes-methods-text">Loading methods response...</p>
+                  <div class="ai-notes-copy-icon">📋</div>
+                </div>
+              </div>
+
+              <!-- Progress towards goal Section -->
+              <div class="ai-notes-section">
+                <h3 class="ai-notes-heading">Progress towards goal</h3>
+                <div class="ai-notes-text-container">
+                  <p class="ai-notes-text" id="ai-notes-progress-goal-text">Loading progress towards goal response...</p>
+                  <div class="ai-notes-copy-icon">📋</div>
+                </div>
+              </div>
+
+              <!-- Recommended Changes Section -->
+              <div class="ai-notes-section">
+                <h3 class="ai-notes-heading">Recommended Changes</h3>
+                <div class="ai-notes-text-container">
+                  <p class="ai-notes-text" id="ai-notes-recommended-changes-text">Loading recommended changes response...</p>
+                  <div class="ai-notes-copy-icon">📋</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="session-action-buttons">
+            <button class="edit-button">Edit</button>
+            <button class="generate-ai-notes-button">Generate AI Notes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <!-- Add Client Modal -->
+    <div class="modal" id="add-client-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>New Client</h2>
+          <span class="close" id="close-add-client">&times;</span>
+        </div>
+        <div class="modal-body">
+          <form id="add-client-form">
+            <!-- Main Client Information -->
+            <div class="form-section">
+              <div class="form-group">
+                <label for="client-first-name">First Name</label>
+                <input type="text" id="client-first-name" name="firstName" required>
+              </div>
+              <div class="form-group">
+                <label for="client-last-name">Last Name</label>
+                <input type="text" id="client-last-name" name="lastName" required>
+              </div>
+              <div class="form-group">
+                <label for="client-date-of-birth">Date of Birth</label>
+                <input type="date" id="client-date-of-birth" name="dateOfBirth">
+              </div>
+              <div class="form-group">
+                <label for="client-phone">Phone</label>
+                <input type="tel" id="client-phone" name="phone">
+              </div>
+              <div class="form-group">
+                <label for="client-email">Email</label>
+                <input type="email" id="client-email" name="email">
+              </div>
+              <div class="form-group">
+                <label for="client-address">Address</label>
+                <textarea id="client-address" name="address" rows="3"></textarea>
+              </div>
+              <div class="form-group">
+                <label for="client-history">History</label>
+                <textarea id="client-history" name="history" rows="4" placeholder="Enter client's medical/clinical history..."></textarea>
+              </div>
+            </div>
+
+            <!-- Collateral Information -->
+            <div class="form-section">
+              <div class="section-divider">
+                <span class="divider-text">Collateral</span>
+              </div>
+              <div class="form-group">
+                <label for="collateral-first-name">First Name</label>
+                <input type="text" id="collateral-first-name" name="collateralFirstName">
+              </div>
+              <div class="form-group">
+                <label for="collateral-last-name">Last Name</label>
+                <input type="text" id="collateral-last-name" name="collateralLastName">
+              </div>
+              <div class="form-group">
+                <label for="collateral-email">Email</label>
+                <input type="email" id="collateral-email" name="collateralEmail">
+              </div>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" id="save-add-client">Add Client</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Custom Confirmation Modal -->
+    <div class="modal" id="confirm-delete-modal">
+      <div class="modal-content confirm-modal">
+        <div class="confirm-header">
+          <div class="confirm-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 9V13M12 17H12.01M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="#DC2626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h3>Delete Client</h3>
+        </div>
+        <div class="confirm-body">
+          <p>Are you sure you want to delete this client? This action cannot be undone.</p>
+        </div>
+        <div class="confirm-footer">
+          <button type="button" class="btn btn-secondary" id="cancel-delete">Cancel</button>
+          <button type="button" class="btn btn-danger" id="confirm-delete">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Session Modal -->
+    <div class="modal" id="edit-session-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Edit Session</h2>
+          <span class="close" id="close-edit-session">&times;</span>
+        </div>
+        <div class="modal-body">
+          <form id="edit-session-form">
+            <!-- Static Fields -->
+            <div class="form-section">
+              <div class="form-group">
+                <label for="edit-client">Client</label>
+                <input type="text" id="edit-client" name="client" readonly>
+              </div>
+              <div class="form-group">
+                <label for="edit-type">Type</label>
+                <input type="text" id="edit-type" name="type" readonly>
+              </div>
+              <div class="form-group">
+                <label for="edit-instructions">Instructions</label>
+                <textarea id="edit-instructions" name="instructions" rows="3"></textarea>
+              </div>
+              <div class="form-group">
+                <label for="edit-created">Created</label>
+                <input type="text" id="edit-created" name="created" readonly>
+              </div>
+            </div>
+
+            <!-- Dynamic Fields Container -->
+            <div class="form-section">
+              <div class="section-divider">
+                <span class="divider-text">Session Data</span>
+              </div>
+              <div id="dynamic-fields-container">
+                <!-- Dynamic fields will be populated here -->
+              </div>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" id="save-edit-session">Save Changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Success Toast Notification -->
+    <div id="success-toast" class="success-toast">
+      <div class="toast-content">
+        <div class="toast-icon">✅</div>
+        <div class="toast-message"></div>
+      </div>
+    </div>
+
+    <!-- Error Toast Notification -->
+    <div id="error-toast" class="error-toast">
+      <div class="toast-content">
+        <div class="toast-icon">❌</div>
+        <div class="toast-message"></div>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
