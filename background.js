@@ -34,7 +34,11 @@ async function callSingleFileExtension(tabId, sendResponse) {
     }
   } catch (error) {
     console.error("❌ Error calling SingleFile:", error);
-    sendResponse({ success: false, error: error.message });
+    sendResponse({ 
+      success: false, 
+      error: error.message,
+      displayError: `Failed to capture page: ${error.message}` 
+    });
   }
 }
 
@@ -76,6 +80,11 @@ async function handleQuickbaseCapture(tabId, sendResponse) {
     }
   } catch (error) {
     console.error("❌ Error in Quickbase capture:", error);
+    sendResponse({ 
+      success: false, 
+      error: error.message,
+      displayError: `Quickbase capture failed: ${error.message}` 
+    });
     await fallbackToMHTML(tabId, sendResponse);
   }
 }

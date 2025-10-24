@@ -90,6 +90,7 @@ async function getEMRTypeName(emrTypeId) {
     return emrType.name || "Unknown type";
   } catch (error) {
     console.error("❌ Error fetching EMR type:", error);
+    showErrorMessage(`Failed to load EMR type: ${error.message}`);
     return "Unknown type";
   }
 }
@@ -203,6 +204,7 @@ async function getSessionDetailFields(emrTypeId) {
     return sessionFields;
   } catch (error) {
     console.error("❌ Error fetching session fields:", error);
+    showErrorMessage(`Failed to load session fields: ${error.message}`);
     return {
       confirmedResults: [],
       fieldMapping: {},
@@ -326,10 +328,10 @@ async function performLogin(email, password) {
     console.error("❌ Login error:", error);
     console.error("❌ API URL:", API_BASE_URL);
 
-    let errorMessage = "Login failed: " + error.message;
+    let errorMessage = error.message;
     if (error.message.includes("Failed to fetch")) {
       errorMessage =
-        "Login failed: Cannot connect to server. Please check your internet connection and server URL.";
+        "Cannot connect to server. Please check your internet connection.";
     }
 
     showErrorMessage(errorMessage);
@@ -383,7 +385,7 @@ async function verifyOTP(otpCode) {
     chrome.storage.local.remove(["pendingLogin"]);
   } catch (error) {
     console.error("❌ OTP verification error:", error);
-    showErrorMessage("OTP verification failed: " + error.message);
+    showErrorMessage(error.message);
   } finally {
     // Reset button state
     verifyButton.textContent = originalText;
@@ -449,6 +451,65 @@ function setupMainAppHandlers() {
 
   // Setup menu functionality
   setupMenuHandlers();
+
+  // Setup forgot password link
+  setupForgotPasswordHandler();
+}
+
+function setupForgotPasswordHandler() {
+  // Use event delegation since the forgot password link is dynamically created
+  document.addEventListener("click", async function(event) {
+    if (event.target && event.target.classList.contains("forgot-password-link")) {
+      event.preventDefault();
+      console.log("🔑 Forgot password link clicked");
+      await handleForgotPassword();
+    }
+  });
+}
+
+async function handleForgotPassword() {
+  try {
+    // Get the user's email from stored data or profile
+    let userEmail = null;
+    
+    // Try to get email from stored login data
+    const result = await chrome.storage.local.get(["userEmail"]);
+    if (result.userEmail) {
+      userEmail = result.userEmail;
+    } else if (window.currentProfileData && window.currentProfileData.email) {
+      userEmail = window.currentProfileData.email;
+    }
+
+    if (!userEmail) {
+      showErrorMessage("Could not determine your email address. Please log in again.");
+      return;
+    }
+
+    console.log("📧 Sending password reset request for:", userEmail);
+
+    // Make API call to forgot-password endpoint
+    const response = await fetch(`${API_BASE_URL}/auth/forgot-password`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        email: userEmail,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Failed to send reset link");
+    }
+
+    console.log("✅ Password reset link sent successfully");
+    showSuccessMessage(`Password reset link sent to ${userEmail}. Please check your email.`);
+  } catch (error) {
+    console.error("❌ Forgot password error:", error);
+    showErrorMessage("Failed to send reset link. Please try again.");
+  }
 }
 
 function setupEditButtonHandlers() {
@@ -856,6 +917,7 @@ async function loadSessionsFromAPI(clientId) {
     }
   } catch (error) {
     console.error("❌ Error loading sessions:", error);
+    showErrorMessage(`Failed to load sessions: ${error.message}`);
   }
 }
 
@@ -1291,7 +1353,8 @@ async function loadClientsWithSessionCounts(clients) {
       );
       clientsList.appendChild(clientItem);
     } catch (error) {
-      console.error(`❌ Error loading sessions for client ${clientId}:`, error);
+      console.error("❌ Error loading sessions for client:", clientId, error);
+      showErrorMessage(`Failed to load sessions for client: ${error.message}`);
       // Create client item with 0 sessions if error
       const clientItem = createClientItemWithSessionCount(client, i, 0);
       clientsList.appendChild(clientItem);
@@ -1355,6 +1418,7 @@ async function getClientSessions(clientId) {
     return sessions;
   } catch (error) {
     console.error(`Error fetching sessions for client ${clientId}:`, error);
+    showErrorMessage(`Failed to fetch sessions: ${error.message}`);
     return [];
   }
 }
@@ -1608,6 +1672,9 @@ function setupSessionTabHandlers() {
     "session-activity-content"
   );
 
+  // Setup feedback handler when tab is shown
+  setupFeedbackHandler();
+
   // Session tab switching functionality
   if (
     sessionInfoTab &&
@@ -1720,6 +1787,318 @@ function showSessionDetailsForSessionInfo() {
   }
 
   console.log("✅ Shown session details for Session Info tab");
+}
+
+// Feedback functionality
+function setupFeedbackHandler() {
+  console.log("🔄 Setting up feedback handler...");
+  
+  const feedbackDisplayBox = document.getElementById("feedback-display-box");
+  const feedbackEditIcon = document.getElementById("feedback-edit-icon");
+  const feedbackEditBox = document.getElementById("feedback-edit-box");
+  const saveFeedbackBtn = document.getElementById("save-feedback-btn");
+  const cancelFeedbackBtn = document.getElementById("cancel-feedback-btn");
+  const feedbackInput = document.getElementById("session-feedback-input");
+  
+  if (!feedbackDisplayBox || !feedbackEditBox || !saveFeedbackBtn || !cancelFeedbackBtn || !feedbackInput) {
+    console.error("❌ Feedback elements not found");
+    return;
+  }
+  
+  // Load existing feedback for current session
+  chrome.storage.local.get(["currentSession"], function(result) {
+    if (result.currentSession && result.currentSession.id) {
+      loadFeedback(result.currentSession.id);
+    }
+  });
+  
+  // Click on edit icon to enter edit mode
+  const newEditIcon = feedbackEditIcon.cloneNode(true);
+  feedbackEditIcon.parentNode.replaceChild(newEditIcon, feedbackEditIcon);
+  
+  newEditIcon.addEventListener("click", function(e) {
+    e.stopPropagation();
+    enterEditMode();
+  });
+  
+  // Click on display box to enter edit mode
+  const newDisplayBox = feedbackDisplayBox.cloneNode(true);
+  feedbackDisplayBox.parentNode.replaceChild(newDisplayBox, feedbackDisplayBox);
+  
+  // Re-get the edit icon after cloning display box
+  const editIconAfterClone = document.getElementById("feedback-edit-icon");
+  if (editIconAfterClone) {
+    editIconAfterClone.addEventListener("click", function(e) {
+      e.stopPropagation();
+      enterEditMode();
+    });
+  }
+  
+  newDisplayBox.addEventListener("click", function() {
+    enterEditMode();
+  });
+  
+  // Save button
+  const newSaveBtn = saveFeedbackBtn.cloneNode(true);
+  saveFeedbackBtn.parentNode.replaceChild(newSaveBtn, saveFeedbackBtn);
+  
+  newSaveBtn.addEventListener("click", async function() {
+    const feedbackText = feedbackInput.value.trim();
+    
+    // Get current session ID
+    chrome.storage.local.get(["currentSession"], async function(result) {
+      if (!result.currentSession || !result.currentSession.id) {
+        showFeedbackStatus("No active session found.", "error");
+        return;
+      }
+      
+      await saveFeedback(result.currentSession.id, feedbackText);
+    });
+  });
+  
+  // Cancel button
+  const newCancelBtn = cancelFeedbackBtn.cloneNode(true);
+  cancelFeedbackBtn.parentNode.replaceChild(newCancelBtn, cancelFeedbackBtn);
+  
+  newCancelBtn.addEventListener("click", function() {
+    exitEditMode();
+  });
+  
+  console.log("✅ Feedback handler set up");
+}
+
+function enterEditMode() {
+  const feedbackDisplayBox = document.getElementById("feedback-display-box");
+  const feedbackEditBox = document.getElementById("feedback-edit-box");
+  const feedbackInput = document.getElementById("session-feedback-input");
+  const feedbackDisplayText = document.getElementById("feedback-display-text");
+  
+  if (feedbackDisplayBox && feedbackEditBox && feedbackInput) {
+    // Copy current text to textarea
+    const currentText = feedbackDisplayText.textContent;
+    if (currentText !== "No feedback yet. Click the edit icon to add feedback.") {
+      feedbackInput.value = currentText;
+    }
+    
+    feedbackDisplayBox.style.display = "none";
+    feedbackEditBox.style.display = "flex";
+    feedbackInput.focus();
+  }
+}
+
+function exitEditMode() {
+  const feedbackDisplayBox = document.getElementById("feedback-display-box");
+  const feedbackEditBox = document.getElementById("feedback-edit-box");
+  
+  if (feedbackDisplayBox && feedbackEditBox) {
+    feedbackEditBox.style.display = "none";
+    feedbackDisplayBox.style.display = "block";
+    showFeedbackStatus("", "");
+  }
+}
+
+async function loadFeedback(sessionId) {
+  try {
+    console.log("🔄 Loading feedback for session:", sessionId);
+    
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      console.error("❌ No access token found");
+      return;
+    }
+    
+    const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to load session: ${response.status}`);
+    }
+    
+    const session = await response.json();
+    
+    const feedbackDisplayText = document.getElementById("feedback-display-text");
+    
+    if (session.feedback) {
+      if (feedbackDisplayText) {
+        feedbackDisplayText.textContent = session.feedback;
+        feedbackDisplayText.classList.remove("empty");
+      }
+      console.log("✅ Feedback loaded:", session.feedback);
+    } else {
+      if (feedbackDisplayText) {
+        feedbackDisplayText.textContent = "No feedback yet. Click the edit icon to add feedback.";
+        feedbackDisplayText.classList.add("empty");
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error loading feedback:", error);
+  }
+}
+
+async function saveFeedback(sessionId, feedbackText) {
+  try {
+    console.log("💾 Saving feedback for session:", sessionId);
+    showFeedbackStatus("Saving feedback...", "");
+    
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      showFeedbackStatus("Not authenticated. Please log in again.", "error");
+      return;
+    }
+    
+    // Save feedback
+    const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/feedback`, {
+      method: "PUT",
+      headers: {
+        "Authorization": `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ feedback: feedbackText })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to save feedback: ${response.status}`);
+    }
+    
+    console.log("✅ Feedback saved successfully");
+    showFeedbackStatus("Feedback saved! Regenerating AI notes...", "success");
+    
+    // Update display text
+    const feedbackDisplayText = document.getElementById("feedback-display-text");
+    if (feedbackDisplayText) {
+      feedbackDisplayText.textContent = feedbackText || "No feedback yet. Click the edit icon to add feedback.";
+      if (feedbackText) {
+        feedbackDisplayText.classList.remove("empty");
+      } else {
+        feedbackDisplayText.classList.add("empty");
+      }
+    }
+    
+    // Exit edit mode and show display mode
+    exitEditMode();
+    
+    // Trigger regeneration with feedback
+    await regenerateAINotesWithFeedback(sessionId);
+    
+  } catch (error) {
+    console.error("❌ Error saving feedback:", error);
+    showFeedbackStatus(`Error: ${error.message}`, "error");
+  }
+}
+
+async function regenerateAINotesWithFeedback(sessionId) {
+  try {
+    console.log("🔄 Regenerating AI notes with feedback for session:", sessionId);
+    
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      showFeedbackStatus("Not authenticated. Please log in again.", "error");
+      return;
+    }
+    
+    // Show loading state on generate button
+    const generateButtons = document.querySelectorAll(
+      ".generate-ai-notes-button, .re-generate-button"
+    );
+    generateButtons.forEach((button) => {
+      button.textContent = "Generating...";
+      button.disabled = true;
+    });
+    
+    // Call generate API (same as normal generation)
+    const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/generate`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to regenerate: ${response.status}`);
+    }
+    
+    console.log("✅ AI notes regeneration started");
+    showFeedbackStatus("AI notes are being regenerated with your feedback!", "success");
+    
+    // Reload session data after a short delay
+    setTimeout(async () => {
+      await refreshSessionData(sessionId);
+      
+      // Reset button state
+      generateButtons.forEach((button) => {
+        button.disabled = false;
+        button.textContent = "Re-generate";
+      });
+      
+      showFeedbackStatus("AI notes updated successfully!", "success");
+      setTimeout(() => showFeedbackStatus("", ""), 3000);
+    }, 2000);
+    
+  } catch (error) {
+    console.error("❌ Error regenerating AI notes:", error);
+    showFeedbackStatus(`Regeneration error: ${error.message}`, "error");
+    
+    // Reset button state on error
+    const generateButtons = document.querySelectorAll(
+      ".generate-ai-notes-button, .re-generate-button"
+    );
+    generateButtons.forEach((button) => {
+      button.disabled = false;
+      button.textContent = "Re-generate";
+    });
+  }
+}
+
+async function refreshSessionData(sessionId) {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) return;
+    
+    const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json"
+      }
+    });
+    
+    if (!response.ok) throw new Error(`Failed to refresh: ${response.status}`);
+    
+    const session = await response.json();
+    
+    // Update AI notes content
+    const methodsText = document.getElementById("ai-notes-methods-text");
+    const progressGoalText = document.getElementById("ai-notes-progress-goal-text");
+    const recommendedChangesText = document.getElementById("ai-notes-recommended-changes-text");
+    
+    if (methodsText) methodsText.textContent = session.methods_response || "No methods response provided.";
+    if (progressGoalText) progressGoalText.textContent = session.progress_towards_goal_response || "No progress towards goal response provided.";
+    if (recommendedChangesText) recommendedChangesText.textContent = session.recommended_changes_response || "No recommended changes response provided.";
+    
+    console.log("✅ Session data refreshed");
+  } catch (error) {
+    console.error("❌ Error refreshing session data:", error);
+  }
+}
+
+function showFeedbackStatus(message, type) {
+  const statusElement = document.getElementById("feedback-status");
+  if (!statusElement) return;
+  
+  statusElement.textContent = message;
+  statusElement.className = "feedback-status";
+  
+  if (type === "success") {
+    statusElement.classList.add("success");
+  } else if (type === "error") {
+    statusElement.classList.add("error");
+  }
 }
 
 function updateSessionDetailPage(session, dynamicFields = null) {
@@ -1991,6 +2370,22 @@ function createDynamicFieldElement(fieldName, fieldValue, fieldType) {
     } catch (e) {
       formattedValue = fieldValue;
     }
+  } else if (fieldType === "boolean") {
+    // Display checkbox for boolean fields (read-only)
+    const isChecked =
+      fieldValue === true ||
+      fieldValue === "true" ||
+      fieldValue === 1 ||
+      fieldValue === "1";
+    fieldElement.innerHTML = `
+      <span class="detail-label">${formattedName}</span>
+      <span class="detail-value">
+        <input type="checkbox" ${
+          isChecked ? "checked" : ""
+        } disabled style="pointer-events: none;">
+      </span>
+    `;
+    return fieldElement;
   }
 
   fieldElement.innerHTML = `
@@ -2121,7 +2516,10 @@ function updateProfilePage(profileData, additionalData = null) {
   window.currentProfileData = profileData;
   if (additionalData) {
     window.profileAdditionalData = additionalData;
-    console.log("✅ Stored profileAdditionalData globally:", window.profileAdditionalData);
+    console.log(
+      "✅ Stored profileAdditionalData globally:",
+      window.profileAdditionalData
+    );
   }
 
   // Update header
@@ -2154,7 +2552,10 @@ function updateProfilePage(profileData, additionalData = null) {
   // Update status badges
   const statusElement = document.getElementById("profile-status");
   if (statusElement) {
-    console.log("🔍 Updating status badge with is_active:", profileData.is_active);
+    console.log(
+      "🔍 Updating status badge with is_active:",
+      profileData.is_active
+    );
     if (profileData.is_active) {
       statusElement.textContent = "Active";
       statusElement.className = "status-badge active";
@@ -2768,18 +3169,29 @@ function editEMRInfo() {
 
   // Populate Coping Skills as editable badges
   const copingSkillsContainer = document.getElementById("edit-coping-skills");
-  if (copingSkillsContainer && window.currentProfileData && window.currentProfileData.coping_skills && window.profileAdditionalData && window.profileAdditionalData.copingSkills) {
+  if (
+    copingSkillsContainer &&
+    window.currentProfileData &&
+    window.currentProfileData.coping_skills &&
+    window.profileAdditionalData &&
+    window.profileAdditionalData.copingSkills
+  ) {
     window.currentProfileData.coping_skills.forEach((skillId) => {
-      const skill = window.profileAdditionalData.copingSkills.find((s) => s.id === skillId);
+      const skill = window.profileAdditionalData.copingSkills.find(
+        (s) => s.id === skillId
+      );
       if (skill) {
         const badge = document.createElement("span");
         badge.className = "info-badge";
         badge.style.cursor = "pointer";
-        badge.innerHTML = `${skill.short_description || skill.name} <span style="margin-left: 4px; font-weight: bold;">×</span>`;
+        badge.innerHTML = `${
+          skill.short_description || skill.name
+        } <span style="margin-left: 4px; font-weight: bold;">×</span>`;
         badge.title = "Click to remove";
-        badge.addEventListener("click", function() {
+        badge.addEventListener("click", function () {
           // Remove from array
-          const index = window.currentProfileData.coping_skills.indexOf(skillId);
+          const index =
+            window.currentProfileData.coping_skills.indexOf(skillId);
           if (index > -1) {
             window.currentProfileData.coping_skills.splice(index, 1);
           }
@@ -2792,19 +3204,32 @@ function editEMRInfo() {
   }
 
   // Populate Clinical Specialties as editable badges
-  const specialtiesContainer = document.getElementById("edit-clinical-specialties");
-  if (specialtiesContainer && window.currentProfileData && window.currentProfileData.clinical_specialties && window.profileAdditionalData && window.profileAdditionalData.clinicalSpecialties) {
+  const specialtiesContainer = document.getElementById(
+    "edit-clinical-specialties"
+  );
+  if (
+    specialtiesContainer &&
+    window.currentProfileData &&
+    window.currentProfileData.clinical_specialties &&
+    window.profileAdditionalData &&
+    window.profileAdditionalData.clinicalSpecialties
+  ) {
     window.currentProfileData.clinical_specialties.forEach((specialtyId) => {
-      const specialty = window.profileAdditionalData.clinicalSpecialties.find((s) => s.id === specialtyId);
+      const specialty = window.profileAdditionalData.clinicalSpecialties.find(
+        (s) => s.id === specialtyId
+      );
       if (specialty) {
         const badge = document.createElement("span");
         badge.className = "info-badge";
         badge.style.cursor = "pointer";
-        badge.innerHTML = `${specialty.short_description || specialty.name} <span style="margin-left: 4px; font-weight: bold;">×</span>`;
+        badge.innerHTML = `${
+          specialty.short_description || specialty.name
+        } <span style="margin-left: 4px; font-weight: bold;">×</span>`;
         badge.title = "Click to remove";
-        badge.addEventListener("click", function() {
+        badge.addEventListener("click", function () {
           // Remove from array
-          const index = window.currentProfileData.clinical_specialties.indexOf(specialtyId);
+          const index =
+            window.currentProfileData.clinical_specialties.indexOf(specialtyId);
           if (index > -1) {
             window.currentProfileData.clinical_specialties.splice(index, 1);
           }
@@ -2818,61 +3243,100 @@ function editEMRInfo() {
 
   // Set current Type Writing value
   const typeWritingSelect = document.getElementById("edit-type-writing");
-  if (typeWritingSelect && window.currentProfileData && window.currentProfileData.type_writing && window.currentProfileData.type_writing.length > 0) {
+  if (
+    typeWritingSelect &&
+    window.currentProfileData &&
+    window.currentProfileData.type_writing &&
+    window.currentProfileData.type_writing.length > 0
+  ) {
     typeWritingSelect.value = window.currentProfileData.type_writing[0];
   }
 
   // Populate Coping Skills dropdown
   const addCopingSkillSelect = document.getElementById("add-coping-skill");
   console.log("🔍 Populating Coping Skills dropdown...");
-  console.log("🔍 Available coping skills:", window.profileAdditionalData?.copingSkills);
-  console.log("🔍 Current coping skills:", window.currentProfileData?.coping_skills);
-  if (addCopingSkillSelect && window.profileAdditionalData && window.profileAdditionalData.copingSkills) {
+  console.log(
+    "🔍 Available coping skills:",
+    window.profileAdditionalData?.copingSkills
+  );
+  console.log(
+    "🔍 Current coping skills:",
+    window.currentProfileData?.coping_skills
+  );
+  if (
+    addCopingSkillSelect &&
+    window.profileAdditionalData &&
+    window.profileAdditionalData.copingSkills
+  ) {
     window.profileAdditionalData.copingSkills.forEach((skill) => {
       // Only add if not already selected
-      if (!window.currentProfileData.coping_skills || !window.currentProfileData.coping_skills.includes(skill.id)) {
+      if (
+        !window.currentProfileData.coping_skills ||
+        !window.currentProfileData.coping_skills.includes(skill.id)
+      ) {
         const option = document.createElement("option");
         option.value = skill.id;
         option.textContent = skill.short_description || skill.name;
         addCopingSkillSelect.appendChild(option);
-        console.log("✅ Added coping skill to dropdown:", skill.short_description || skill.name);
+        console.log(
+          "✅ Added coping skill to dropdown:",
+          skill.short_description || skill.name
+        );
       }
     });
   } else {
     console.error("❌ Failed to populate Coping Skills dropdown", {
       selectExists: !!addCopingSkillSelect,
       additionalDataExists: !!window.profileAdditionalData,
-      copingSkillsExists: !!window.profileAdditionalData?.copingSkills
+      copingSkillsExists: !!window.profileAdditionalData?.copingSkills,
     });
   }
 
   // Populate Clinical Specialties dropdown
-  const addClinicalSpecialtySelect = document.getElementById("add-clinical-specialty");
+  const addClinicalSpecialtySelect = document.getElementById(
+    "add-clinical-specialty"
+  );
   console.log("🔍 Populating Clinical Specialties dropdown...");
-  console.log("🔍 Available specialties:", window.profileAdditionalData?.clinicalSpecialties);
-  console.log("🔍 Current specialties:", window.currentProfileData?.clinical_specialties);
-  if (addClinicalSpecialtySelect && window.profileAdditionalData && window.profileAdditionalData.clinicalSpecialties) {
+  console.log(
+    "🔍 Available specialties:",
+    window.profileAdditionalData?.clinicalSpecialties
+  );
+  console.log(
+    "🔍 Current specialties:",
+    window.currentProfileData?.clinical_specialties
+  );
+  if (
+    addClinicalSpecialtySelect &&
+    window.profileAdditionalData &&
+    window.profileAdditionalData.clinicalSpecialties
+  ) {
     window.profileAdditionalData.clinicalSpecialties.forEach((specialty) => {
       // Only add if not already selected
-      if (!window.currentProfileData.clinical_specialties || !window.currentProfileData.clinical_specialties.includes(specialty.id)) {
+      if (
+        !window.currentProfileData.clinical_specialties ||
+        !window.currentProfileData.clinical_specialties.includes(specialty.id)
+      ) {
         const option = document.createElement("option");
         option.value = specialty.id;
         option.textContent = specialty.short_description || specialty.name;
         addClinicalSpecialtySelect.appendChild(option);
-        console.log("✅ Added specialty to dropdown:", specialty.short_description || specialty.name);
+        console.log(
+          "✅ Added specialty to dropdown:",
+          specialty.short_description || specialty.name
+        );
       }
     });
   } else {
     console.error("❌ Failed to populate Clinical Specialties dropdown", {
       selectExists: !!addClinicalSpecialtySelect,
       additionalDataExists: !!window.profileAdditionalData,
-      specialtiesExists: !!window.profileAdditionalData?.clinicalSpecialties
+      specialtiesExists: !!window.profileAdditionalData?.clinicalSpecialties,
     });
   }
 
   // Add event listener for Coping Skill dropdown change (auto-add on selection)
   if (addCopingSkillSelect) {
-    addCopingSkillSelect.addEventListener("change", function() {
+    addCopingSkillSelect.addEventListener("change", function () {
       const skillId = this.value;
       if (!skillId) return; // User selected the placeholder
 
@@ -2883,17 +3347,23 @@ function editEMRInfo() {
       window.currentProfileData.coping_skills.push(skillId);
 
       // Find skill details
-      const skill = window.profileAdditionalData.copingSkills.find((s) => s.id === skillId);
+      const skill = window.profileAdditionalData.copingSkills.find(
+        (s) => s.id === skillId
+      );
       if (skill) {
         // Add badge to UI
-        const copingSkillsContainer = document.getElementById("edit-coping-skills");
+        const copingSkillsContainer =
+          document.getElementById("edit-coping-skills");
         const badge = document.createElement("span");
         badge.className = "info-badge";
         badge.style.cursor = "pointer";
-        badge.innerHTML = `${skill.short_description || skill.name} <span style="margin-left: 4px; font-weight: bold;">×</span>`;
+        badge.innerHTML = `${
+          skill.short_description || skill.name
+        } <span style="margin-left: 4px; font-weight: bold;">×</span>`;
         badge.title = "Click to remove";
-        badge.addEventListener("click", function() {
-          const index = window.currentProfileData.coping_skills.indexOf(skillId);
+        badge.addEventListener("click", function () {
+          const index =
+            window.currentProfileData.coping_skills.indexOf(skillId);
           if (index > -1) {
             window.currentProfileData.coping_skills.splice(index, 1);
           }
@@ -2915,7 +3385,7 @@ function editEMRInfo() {
 
   // Add event listener for Clinical Specialty dropdown change (auto-add on selection)
   if (addClinicalSpecialtySelect) {
-    addClinicalSpecialtySelect.addEventListener("change", function() {
+    addClinicalSpecialtySelect.addEventListener("change", function () {
       const specialtyId = this.value;
       if (!specialtyId) return; // User selected the placeholder
 
@@ -2926,17 +3396,24 @@ function editEMRInfo() {
       window.currentProfileData.clinical_specialties.push(specialtyId);
 
       // Find specialty details
-      const specialty = window.profileAdditionalData.clinicalSpecialties.find((s) => s.id === specialtyId);
+      const specialty = window.profileAdditionalData.clinicalSpecialties.find(
+        (s) => s.id === specialtyId
+      );
       if (specialty) {
         // Add badge to UI
-        const specialtiesContainer = document.getElementById("edit-clinical-specialties");
+        const specialtiesContainer = document.getElementById(
+          "edit-clinical-specialties"
+        );
         const badge = document.createElement("span");
         badge.className = "info-badge";
         badge.style.cursor = "pointer";
-        badge.innerHTML = `${specialty.short_description || specialty.name} <span style="margin-left: 4px; font-weight: bold;">×</span>`;
+        badge.innerHTML = `${
+          specialty.short_description || specialty.name
+        } <span style="margin-left: 4px; font-weight: bold;">×</span>`;
         badge.title = "Click to remove";
-        badge.addEventListener("click", function() {
-          const index = window.currentProfileData.clinical_specialties.indexOf(specialtyId);
+        badge.addEventListener("click", function () {
+          const index =
+            window.currentProfileData.clinical_specialties.indexOf(specialtyId);
           if (index > -1) {
             window.currentProfileData.clinical_specialties.splice(index, 1);
           }
@@ -2959,11 +3436,25 @@ function editEMRInfo() {
   // Populate EMR Types dropdown
   if (window.profileAdditionalData && window.profileAdditionalData.emrTypes) {
     const emrTypeSelect = document.getElementById("edit-emr-type");
+    
+    // Get list of already-used EMR Type IDs
+    const usedEmrTypeIds = new Set();
+    if (window.currentProfileData && window.currentProfileData.emr_type_documentation_pairs) {
+      window.currentProfileData.emr_type_documentation_pairs.forEach((pair) => {
+        usedEmrTypeIds.add(pair.emr_type_id);
+      });
+    }
+    
     window.profileAdditionalData.emrTypes.forEach((emrType) => {
-      const option = document.createElement("option");
-      option.value = emrType.id || emrType.name;
-      option.textContent = emrType.name || emrType.title || emrType;
-      emrTypeSelect.appendChild(option);
+      const emrTypeId = emrType.id || emrType.name;
+      
+      // Only add EMR Type if it hasn't been used yet
+      if (!usedEmrTypeIds.has(emrTypeId)) {
+        const option = document.createElement("option");
+        option.value = emrTypeId;
+        option.textContent = emrType.name || emrType.title || emrType;
+        emrTypeSelect.appendChild(option);
+      }
     });
   }
 
@@ -3020,7 +3511,7 @@ function editEMRInfo() {
   // Add event listener for cancel new pair button
   const cancelNewPairBtn = document.getElementById("cancel-new-pair-btn");
   if (cancelNewPairBtn) {
-    cancelNewPairBtn.addEventListener("click", function() {
+    cancelNewPairBtn.addEventListener("click", function () {
       const pairForm = document.getElementById("new-pair-form");
       if (pairForm) {
         pairForm.style.display = "none";
@@ -3093,10 +3584,16 @@ function saveEMRPair() {
 
   showSuccessMessage("EMR Pair added successfully!");
 
+  // Remove the selected EMR Type from dropdown (since it's now used)
+  const selectedEmrOption = emrTypeSelect.querySelector(`option[value="${emrTypeId}"]`);
+  if (selectedEmrOption) {
+    selectedEmrOption.remove();
+  }
+
   // Clear the dropdowns and hide the form
-  document.getElementById("edit-emr-type").value = "";
+  emrTypeSelect.value = "";
   document.getElementById("edit-documentation-method").value = "";
-  
+
   // Hide the new pair form
   const pairForm = document.getElementById("new-pair-form");
   if (pairForm) {
@@ -3122,8 +3619,26 @@ function removeExistingPair(index) {
     window.currentProfileData &&
     window.currentProfileData.emr_type_documentation_pairs
   ) {
+    // Get the pair before removing it
+    const removedPair = window.currentProfileData.emr_type_documentation_pairs[index];
+    
     // Remove from array
     window.currentProfileData.emr_type_documentation_pairs.splice(index, 1);
+
+    // Add the EMR Type back to the dropdown
+    const emrTypeSelect = document.getElementById("edit-emr-type");
+    if (emrTypeSelect && removedPair && window.profileAdditionalData) {
+      const emrType = window.profileAdditionalData.emrTypes.find(
+        (type) => (type.id || type.name) === removedPair.emr_type_id
+      );
+      if (emrType) {
+        const option = document.createElement("option");
+        option.value = emrType.id || emrType.name;
+        option.textContent = emrType.name || emrType.title || emrType;
+        emrTypeSelect.appendChild(option);
+        console.log("✅ Added EMR Type back to dropdown:", emrType.name);
+      }
+    }
 
     // Refresh the existing pairs display
     const pairsContainer = document.getElementById("existing-pairs-container");
@@ -3167,7 +3682,8 @@ async function saveEMRInfo() {
       emr_type_documentation_pairs:
         window.currentProfileData.emr_type_documentation_pairs || [],
       coping_skills: window.currentProfileData.coping_skills || [],
-      clinical_specialties: window.currentProfileData.clinical_specialties || [],
+      clinical_specialties:
+        window.currentProfileData.clinical_specialties || [],
       type_writing: typeWritingValue ? [typeWritingValue] : [],
     };
 
@@ -3289,7 +3805,9 @@ async function savePersonalInfo() {
     const companyField = document.getElementById("edit-company");
     const statusField = document.getElementById("edit-status");
     const userTypeField = document.getElementById("edit-user-type");
-    const sessionInstructionsField = document.getElementById("edit-session-instructions");
+    const sessionInstructionsField = document.getElementById(
+      "edit-session-instructions"
+    );
 
     if (!statusField) {
       showErrorMessage("Edit form not found. Please try editing again.");
@@ -3299,13 +3817,17 @@ async function savePersonalInfo() {
 
     const formData = {
       ...window.currentProfileData, // Include all existing data
-      mobile_phone: mobileField?.value || window.currentProfileData.mobile_phone,
-      company_name: companyField?.value || window.currentProfileData.company_name,
+      mobile_phone:
+        mobileField?.value || window.currentProfileData.mobile_phone,
+      company_name:
+        companyField?.value || window.currentProfileData.company_name,
       is_active: statusField.value === "true",
       user_type: userTypeField?.value || window.currentProfileData.user_type,
-      session_instructions: sessionInstructionsField?.value || window.currentProfileData.session_instructions,
+      session_instructions:
+        sessionInstructionsField?.value ||
+        window.currentProfileData.session_instructions,
     };
-    
+
     console.log("🔍 Form data to save:", formData);
 
     // Get token
@@ -3336,7 +3858,9 @@ async function savePersonalInfo() {
     window.currentProfileData = updatedData;
 
     // Exit edit mode first by removing edit UI elements
-    const personalInfoSection = document.getElementById("personal-info-content");
+    const personalInfoSection = document.getElementById(
+      "personal-info-content"
+    );
     if (personalInfoSection) {
       // FIRST: Save reference to status dropdown before removing it
       const statusDropdown = document.getElementById("edit-status");
@@ -3345,21 +3869,23 @@ async function savePersonalInfo() {
         statusContainer = statusDropdown.parentElement;
         console.log("✅ Found status dropdown before cleanup");
       }
-      
+
       // Remove edit buttons
       const editButtons = personalInfoSection.querySelector(".edit-buttons");
       if (editButtons) {
         editButtons.remove();
       }
-      
+
       // Remove all edit inputs
       const editInputs = personalInfoSection.querySelectorAll(".edit-input");
       editInputs.forEach((input) => input.remove());
-      
+
       // Remove array edit containers
-      const arrayContainers = personalInfoSection.querySelectorAll(".array-edit-container");
+      const arrayContainers = personalInfoSection.querySelectorAll(
+        ".array-edit-container"
+      );
       arrayContainers.forEach((container) => container.remove());
-      
+
       // Restore password field
       const passwordSpan = document.getElementById("profile-password");
       if (passwordSpan) {
@@ -3369,7 +3895,7 @@ async function savePersonalInfo() {
           <a href="#" class="forgot-password-link">Forgot password?</a>
         `;
       }
-      
+
       // Restore status badge structure so updateProfilePage can find it
       if (statusContainer) {
         statusContainer.innerHTML =
@@ -3408,7 +3934,7 @@ function cancelEditPersonalInfo() {
     const statusDropdown = document.getElementById("edit-status");
     const statusSpan = document.getElementById("profile-status");
     let statusContainer = null;
-    
+
     if (statusDropdown) {
       statusContainer = statusDropdown.parentElement;
       console.log("✅ Found status dropdown, will restore badge");
@@ -3435,7 +3961,8 @@ function cancelEditPersonalInfo() {
       let originalValue = "";
 
       if (fieldName === "mobile") {
-        originalValue = window.currentProfileData.mobile_phone || "Not specified";
+        originalValue =
+          window.currentProfileData.mobile_phone || "Not specified";
         field.textContent = originalValue;
       } else if (fieldName === "company") {
         originalValue =
@@ -3570,11 +4097,15 @@ function editCompanyInfo() {
     select.appendChild(inactiveOption);
 
     // Set current value
-    select.value = window.currentProfileData.company?.is_active ? "true" : "false";
+    select.value = window.currentProfileData.company?.is_active
+      ? "true"
+      : "false";
 
     statusContainer.innerHTML = "";
     statusContainer.appendChild(select);
-    console.log("📊 Company status dropdown created with ID: edit-company-status");
+    console.log(
+      "📊 Company status dropdown created with ID: edit-company-status"
+    );
   } else {
     console.log("❌ Company status field not found!");
   }
@@ -3662,7 +4193,7 @@ async function saveCompanyInfo() {
       industryField: !!industryField,
       emrField: !!emrField,
       addressField: !!addressField,
-      isActiveField: !!isActiveField
+      isActiveField: !!isActiveField,
     });
 
     if (
@@ -3722,7 +4253,7 @@ async function saveCompanyInfo() {
     // Exit edit mode and restore status badge
     const companyInfoSection = document.getElementById("company-info-content");
     if (companyInfoSection) {
-      // Save reference to status dropdown before removing  
+      // Save reference to status dropdown before removing
       // The edit function creates it as edit-company-status (from profile-company-status)
       const statusDropdown = document.getElementById("edit-company-status");
       let statusContainer = null;
@@ -3730,17 +4261,17 @@ async function saveCompanyInfo() {
         statusContainer = statusDropdown.parentElement;
         console.log("✅ Found company status dropdown before cleanup");
       }
-      
+
       // Remove edit buttons
       const editButtons = companyInfoSection.querySelector(".edit-buttons");
       if (editButtons) {
         editButtons.remove();
       }
-      
+
       // Remove all edit inputs
       const editInputs = companyInfoSection.querySelectorAll(".edit-input");
       editInputs.forEach((input) => input.remove());
-      
+
       // Restore status badge structure
       if (statusContainer) {
         statusContainer.innerHTML =
@@ -3771,7 +4302,7 @@ function cancelEditCompanyInfo() {
     const statusDropdown = document.getElementById("edit-company-status");
     const statusSpan = document.getElementById("profile-company-status");
     let statusContainer = null;
-    
+
     if (statusDropdown) {
       statusContainer = statusDropdown.parentElement;
       console.log("✅ Found company status dropdown for cancel");
@@ -3779,7 +4310,7 @@ function cancelEditCompanyInfo() {
       statusContainer = statusSpan.parentElement;
       console.log("✅ Found company status span for cancel");
     }
-    
+
     // Remove edit buttons
     const editButtons = companyInfoSection.querySelector(".edit-buttons");
     if (editButtons) {
@@ -3815,7 +4346,7 @@ function cancelEditCompanyInfo() {
         field.textContent = originalValue;
       }
     });
-    
+
     // Restore company status badge structure
     if (statusContainer) {
       statusContainer.innerHTML =
@@ -3968,6 +4499,7 @@ async function loadSessionAINotes() {
     }
   } catch (error) {
     console.error("❌ Error loading session AI Notes:", error);
+    showErrorMessage(`Failed to load AI notes: ${error.message}`);
   }
 }
 
@@ -4009,6 +4541,7 @@ async function checkAndUpdateAIButtonState() {
     }
   } catch (error) {
     console.error("❌ Error checking AI button state:", error);
+    showErrorMessage(`Failed to check AI button state: ${error.message}`);
   }
 }
 
@@ -4247,18 +4780,38 @@ async function saveNewClient() {
       return;
     }
 
-    // Prepare client data
+    // Validate required fields
+    const firstName = formData.get("firstName");
+    const lastName = formData.get("lastName");
+    const dateOfBirth = formData.get("dateOfBirth");
+
+    if (!firstName || firstName.trim() === "") {
+      showErrorMessage("First name is required.");
+      return;
+    }
+
+    if (!lastName || lastName.trim() === "") {
+      showErrorMessage("Last name is required.");
+      return;
+    }
+
+    if (!dateOfBirth || dateOfBirth.trim() === "") {
+      showErrorMessage("Date of birth is required.");
+      return;
+    }
+
+    // Prepare client data - convert empty strings to null for all fields
     const clientData = {
-      first_name: formData.get("firstName"),
-      last_name: formData.get("lastName"),
-      date_of_birth: formData.get("dateOfBirth") || null,
-      phone: formData.get("phone"),
-      email: formData.get("email"),
-      address: formData.get("address"),
-      history: formData.get("history"),
-      collateral_first_name: formData.get("collateralFirstName"),
-      collateral_last_name: formData.get("collateralLastName"),
-      collateral_email: formData.get("collateralEmail"),
+      first_name: firstName || null,
+      last_name: lastName || null,
+      date_of_birth: dateOfBirth || null,
+      phone: formData.get("phone") || null,
+      email: formData.get("email") || null,
+      address: formData.get("address") || null,
+      history: formData.get("history") || null,
+      collateral_first_name: formData.get("collateralFirstName") || null,
+      collateral_last_name: formData.get("collateralLastName") || null,
+      collateral_email: formData.get("collateralEmail") || null,
     };
 
     console.log("📋 Client data:", clientData);
@@ -4285,7 +4838,34 @@ async function saveNewClient() {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      // Try to get detailed error message from server
+      let errorMessage = `HTTP error! status: ${response.status}`;
+      try {
+        const errorData = await response.json();
+        console.error("❌ Server error details:", errorData);
+        if (errorData.detail) {
+          // Handle array of validation errors
+          if (Array.isArray(errorData.detail)) {
+            errorMessage = errorData.detail
+              .map((err) => {
+                if (typeof err === "string") return err;
+                if (err.msg) return err.msg;
+                if (err.message) return err.message;
+                return JSON.stringify(err);
+              })
+              .join(", ");
+          } else {
+            errorMessage = errorData.detail;
+          }
+        } else if (errorData.message) {
+          errorMessage = errorData.message;
+        } else if (errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch (e) {
+        console.error("❌ Could not parse error response:", e);
+      }
+      throw new Error(errorMessage);
     }
 
     const result = await response.json();
@@ -4432,10 +5012,10 @@ function showEditSessionModal(sessionData) {
       createdDate,
     });
 
-    document.getElementById("edit-client").value = clientName;
-    document.getElementById("edit-type").value = typeName;
+    document.getElementById("edit-client").textContent = clientName;
+    document.getElementById("edit-type").textContent = typeName;
     document.getElementById("edit-instructions").value = instructions;
-    document.getElementById("edit-created").value = createdDate;
+    document.getElementById("edit-created").textContent = createdDate;
 
     // Store session ID for update
     modal.setAttribute("data-edit-session-id", sessionData.id);
@@ -4755,7 +5335,23 @@ async function loadSessionDynamicFields(sessionData) {
           const emrField = dynamicFields.fields.find(
             (field) => field.name === result.key
           );
-          const fieldType = emrField ? emrField.type : result.type;
+          let fieldType = emrField ? emrField.type : result.type;
+
+          // Auto-detect boolean if value is True/False string
+          const fieldValue = sessionData[matchingKey] || "";
+          if (
+            !fieldType &&
+            (fieldValue === "True" ||
+              fieldValue === "False" ||
+              fieldValue === true ||
+              fieldValue === false)
+          ) {
+            fieldType = "boolean";
+            console.log(
+              "🔍 Auto-detected boolean type from value:",
+              fieldValue
+            );
+          }
 
           const fieldContainer = document.createElement("div");
           fieldContainer.className = "form-group";
@@ -4772,15 +5368,8 @@ async function loadSessionDynamicFields(sessionData) {
             input = document.createElement("input");
             input.type = "date";
           } else if (fieldType === "boolean") {
-            input = document.createElement("select");
-            const trueOption = document.createElement("option");
-            trueOption.value = "true";
-            trueOption.textContent = "True";
-            const falseOption = document.createElement("option");
-            falseOption.value = "false";
-            falseOption.textContent = "False";
-            input.appendChild(trueOption);
-            input.appendChild(falseOption);
+            input = document.createElement("input");
+            input.type = "checkbox";
           } else if (fieldType === "dropdown") {
             input = document.createElement("select");
             // Get dropdown values from the EMR field
@@ -4826,13 +5415,16 @@ async function loadSessionDynamicFields(sessionData) {
             console.log("🔍 Made field read-only:", result.key);
           }
 
-          // Get the actual value from session data
-          const fieldValue = sessionData[matchingKey] || "";
+          // fieldValue already fetched above for type detection
           console.log("🔍 Field value for", matchingKey, ":", fieldValue);
 
           // Set value based on field type
           if (fieldType === "boolean") {
-            input.value = fieldValue ? "true" : "false";
+            input.checked =
+              fieldValue === true ||
+              fieldValue === "true" ||
+              fieldValue === "True" ||
+              fieldValue === "1";
           } else if (fieldType === "date" && fieldValue) {
             // Convert date to YYYY-MM-DD format for date input
             const date = new Date(fieldValue);
@@ -5003,6 +5595,7 @@ async function loadSessionDynamicFields(sessionData) {
     console.log("✅ Dynamic fields loaded successfully");
   } catch (error) {
     console.error("❌ Error loading dynamic fields:", error);
+    showErrorMessage(`Failed to load dynamic fields: ${error.message}`);
     container.innerHTML =
       "<p>Error loading dynamic fields: " + error.message + "</p>";
   }
@@ -5356,7 +5949,7 @@ function captureFastHTML() {
       // Set timeout to prevent infinite waiting (3 minutes for Quickbase)
       const timeout = setTimeout(() => {
         console.error("❌ Capture timeout - taking too long");
-        alert("❌ Capture is taking too long. Please try again.");
+        showErrorMessage("Capture is taking too long. Please try again.");
         if (button) {
           button.textContent = "Send EMR Request";
           button.disabled = false;
@@ -5380,10 +5973,12 @@ function captureFastHTML() {
             createSingleFileHTML(response.data);
           } else {
             console.error("❌ SingleFile capture failed:", response?.error);
-            alert(
-              "SingleFile capture failed: " +
-                (response?.error || "Unknown error")
-            );
+            // Display user-friendly error message
+            const errorMsg =
+              response?.displayError ||
+              response?.error ||
+              "Unknown error occurred during capture";
+            showErrorMessage(errorMsg);
           }
 
           // Reset button
@@ -5427,7 +6022,7 @@ function createSingleFileHTML(singleFileData) {
     }
   } catch (error) {
     console.error("❌ Error creating SingleFile HTML:", error);
-    alert("Error creating SingleFile HTML: " + error.message);
+    showErrorMessage(`Error creating SingleFile HTML: ${error.message}`);
 
     // Reset button
     const button = document.querySelector(".send-button");
@@ -5513,7 +6108,7 @@ function createSimpleHTML(captureData) {
     }
   } catch (error) {
     console.error("❌ Error creating simple HTML:", error);
-    alert("Error creating HTML file: " + error.message);
+    showErrorMessage(`Error creating HTML file: ${error.message}`);
 
     // Reset button
     const button = document.querySelector(".send-button");

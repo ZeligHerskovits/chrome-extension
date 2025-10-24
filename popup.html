@@ -237,7 +237,6 @@
                 </div>
                 <div class="section-actions">
                   <button class="edit-btn" id="edit-personal-info-btn">✏️</button>
-                  <button class="delete-btn">🗑️</button>
                 </div>
               </div>
               
@@ -635,6 +634,33 @@
                   <div class="ai-notes-copy-icon">📋</div>
                 </div>
               </div>
+
+              <!-- Feedback Section -->
+              <div class="ai-notes-section feedback-section">
+                <h3 class="ai-notes-heading">Feedback</h3>
+                <div class="feedback-box-container">
+                  <!-- Display Mode -->
+                  <div class="feedback-display-box" id="feedback-display-box">
+                    <div class="feedback-display-text" id="feedback-display-text">No feedback yet. Click the edit icon to add feedback.</div>
+                    <div class="feedback-edit-icon" id="feedback-edit-icon" title="Edit feedback">✏️</div>
+                  </div>
+                  
+                  <!-- Edit Mode -->
+                  <div class="feedback-edit-box" id="feedback-edit-box" style="display: none;">
+                    <textarea 
+                      class="feedback-textarea" 
+                      id="session-feedback-input" 
+                      placeholder="Enter your feedback here to improve AI notes generation..."
+                      rows="4"
+                    ></textarea>
+                    <div class="feedback-edit-actions">
+                      <button class="btn-save-feedback" id="save-feedback-btn">Save</button>
+                      <button class="btn-cancel-feedback" id="cancel-feedback-btn">Cancel</button>
+                      <span class="feedback-status" id="feedback-status"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -748,20 +774,20 @@
             <!-- Static Fields -->
             <div class="form-section">
               <div class="form-group">
-                <label for="edit-client">Client</label>
-                <input type="text" id="edit-client" name="client" readonly>
+                <label>Client</label>
+                <div class="readonly-field" id="edit-client"></div>
               </div>
               <div class="form-group">
-                <label for="edit-type">Type</label>
-                <input type="text" id="edit-type" name="type" readonly>
+                <label>Type</label>
+                <div class="readonly-field" id="edit-type"></div>
               </div>
               <div class="form-group">
                 <label for="edit-instructions">Instructions</label>
                 <textarea id="edit-instructions" name="instructions" rows="3"></textarea>
               </div>
               <div class="form-group">
-                <label for="edit-created">Created</label>
-                <input type="text" id="edit-created" name="created" readonly>
+                <label>Created</label>
+                <div class="readonly-field" id="edit-created"></div>
               </div>
             </div>
 
