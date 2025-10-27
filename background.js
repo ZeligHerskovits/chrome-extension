@@ -1,6 +1,19 @@
 // CHROME EXTENSION THAT CALLS SINGLEFILE
 // Your button triggers SingleFile extension, then uses its HTML
 
+// Track side panel state per window
+const sidePanelState = new Map();
+
+// Handle extension icon click to toggle side panel
+chrome.action.onClicked.addListener(async (tab) => {
+  try {
+    await chrome.sidePanel.open({ windowId: tab.windowId });
+    sidePanelState.set(tab.windowId, true);
+  } catch (error) {
+    console.error('Error opening side panel:', error);
+  }
+});
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "triggerSingleFile") {
     console.log("🚀 Calling SingleFile extension...");
@@ -8,6 +21,47 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         callSingleFileExtension(tabs[0].id, sendResponse);
+      }
+    });
+    return true;
+  }
+  
+  // Handle toggle side panel from content script
+  if (request.action === "toggleSidePanel") {
+    console.log('SessyNote: Received toggleSidePanel message');
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs[0]) {
+        console.log('SessyNote: Active tab found:', tabs[0].id);
+        const windowId = tabs[0].windowId;
+        const isOpen = sidePanelState.get(windowId);
+        
+        try {
+          if (isOpen) {
+            // Close by setting panel to disabled, then re-enabling
+            await chrome.sidePanel.setOptions({
+              tabId: tabs[0].id,
+              enabled: false
+            });
+            await chrome.sidePanel.setOptions({
+              tabId: tabs[0].id,
+              path: 'popup.html',
+              enabled: true
+            });
+            sidePanelState.set(windowId, false);
+            console.log('SessyNote: Side panel closed');
+            chrome.tabs.sendMessage(tabs[0].id, { action: 'sidePanelClosed' });
+          } else {
+            // Open the side panel
+            await chrome.sidePanel.open({ windowId: windowId });
+            sidePanelState.set(windowId, true);
+            console.log('SessyNote: Side panel opened successfully');
+            chrome.tabs.sendMessage(tabs[0].id, { action: 'sidePanelOpened' });
+          }
+        } catch (error) {
+          console.error('SessyNote: Error toggling side panel:', error);
+        }
+      } else {
+        console.error('SessyNote: No active tab found');
       }
     });
     return true;

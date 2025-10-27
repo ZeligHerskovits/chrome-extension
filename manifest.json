@@ -1,6 +1,6 @@
 ﻿{
   "manifest_version": 3,
-  "name": "Noted Chrome Extension - Enhanced",
+  "name": "SessyNote",
   "version": "2.0",
   "description": "A Chrome extension for capturing complete web pages with all resources",
   "permissions": [
@@ -11,26 +11,37 @@
     "downloads",
     "webRequest",
     "pageCapture",
-    "webNavigation"
+    "webNavigation",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "popup.html",
-    "default_title": "Noted - Enhanced Capture",
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
-    }
+    "default_title": "SessyNote"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
   },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }

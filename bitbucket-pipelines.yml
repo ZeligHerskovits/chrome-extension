@@ -1,0 +1,50 @@
+image: node:18
+
+pipelines:
+  branches:
+    main:
+      - step:
+          name: Build and Deploy to Chrome Web Store
+          caches:
+            - node
+          script:
+            # Install dependencies
+            - npm install -g chrome-webstore-upload-cli
+            
+            # Create a zip file of the extension
+            - apt-get update && apt-get install -y zip
+            - zip -r extension.zip . -x "*.git*" "node_modules/*" "bitbucket-pipelines.yml" "*.md" "package*.json"
+            
+            # Upload to Chrome Web Store
+            - >
+              webstore upload
+              --source extension.zip
+              --extension-id $EXTENSION_ID
+              --client-id $CLIENT_ID
+              --client-secret $CLIENT_SECRET
+              --refresh-token $REFRESH_TOKEN
+              --auto-publish
+          
+  tags:
+    'v*':
+      - step:
+          name: Build and Deploy Tagged Release
+          caches:
+            - node
+          script:
+            # Install dependencies
+            - npm install -g chrome-webstore-upload-cli
+            
+            # Create a zip file of the extension
+            - apt-get update && apt-get install -y zip
+            - zip -r extension.zip . -x "*.git*" "node_modules/*" "bitbucket-pipelines.yml" "*.md" "package*.json"
+            
+            # Upload to Chrome Web Store
+            - >
+              webstore upload
+              --source extension.zip
+              --extension-id $EXTENSION_ID
+              --client-id $CLIENT_ID
+              --client-secret $CLIENT_SECRET
+              --refresh-token $REFRESH_TOKEN
+              --auto-publish

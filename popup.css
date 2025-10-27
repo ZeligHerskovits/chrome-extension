@@ -1,4 +1,4 @@
-﻿/* Reset and base styles */
+/* Reset and base styles */
 * {
   margin: 0;
   padding: 0;
@@ -185,6 +185,37 @@ body {
   overflow: hidden;
 }
 
+/* Floating Side Panel Toggle Button */
+.floating-panel-toggle {
+  position: fixed;
+  right: 20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 60px;
+  background-color: #298997;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  z-index: 2147483647;
+  transition: all 0.3s ease;
+}
+
+.floating-panel-toggle:hover {
+  background-color: #227a87;
+  width: 36px;
+}
+
+.floating-panel-toggle .toggle-icon {
+  font-size: 20px;
+  font-weight: bold;
+  line-height: 1;
+}
+
 /* Top Header Bar */
 .top-header {
   background-color: white;
@@ -221,22 +252,29 @@ body {
 }
 
 .top-header .logo-icon {
-  width: 24px;
-  height: 24px;
-  background: #298997;
-  border-radius: 6px;
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: white;
-  font-size: 14px;
-  font-weight: bold;
+  overflow: visible;
+  position: relative;
+}
+
+.top-header .logo-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .top-header .logo-text {
   font-size: 18px;
-  font-weight: bold;
-  color: #333;
+  font-weight: 600;
+  color: #2c3e50;
+  letter-spacing: -0.3px;
+  margin-left: 2px;
 }
 
 .header-actions {
@@ -260,12 +298,22 @@ body {
   background-color: #f0f0f0;
 }
 
+#toggle-side-panel {
+  color: #666;
+  font-weight: bold;
+}
+
+#toggle-side-panel:hover {
+  background-color: #fee;
+  color: #c33;
+}
+
 /* Dropdown Navigation Menu */
 .side-menu {
   position: absolute;
   top: 50px;
   left: 16px;
-  width: 200px;
+  width: 220px;
   background-color: white;
   border: 1px solid #e0e0e0;
   border-radius: 8px;
@@ -290,12 +338,12 @@ body {
 .menu-item {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 12px 16px;
+  gap: 8px;
+  padding: 12px 20px;
   cursor: pointer;
   transition: background-color 0.2s;
   color: #333;
-  min-height: 40px;
+  min-height: 44px;
 }
 
 .menu-item:hover {
@@ -308,18 +356,31 @@ body {
 }
 
 .menu-item .menu-icon {
-  font-size: 16px;
-  width: 24px;
-  text-align: center;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
   flex-shrink: 0;
-  margin-right: 12px;
+  display: block;
+  margin-right: 4px;
+  fill: currentColor;
+  overflow: visible;
+}
+
+.menu-item .menu-icon-simple {
+  font-size: 18px;
+  min-width: 22px;
+  display: inline-block;
+  text-align: center;
+  margin-right: 4px;
 }
 
 .menu-item .menu-text {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 500;
-  flex: 1;
   white-space: nowrap;
+  line-height: 1;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 /* Main Content Area */
@@ -1505,8 +1566,8 @@ select.edit-input {
 .pair-tag {
   display: inline-flex;
   align-items: center;
-  background: #6c757d;
-  color: white;
+  background-color: #e3f2fd;
+  color: #1976d2;
   padding: 6px 12px;
   border-radius: 20px;
   font-size: 12px;
@@ -1519,9 +1580,9 @@ select.edit-input {
 }
 
 .remove-pair-btn {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(25, 118, 210, 0.2);
   border: none;
-  color: white;
+  color: #1976d2;
   width: 20px;
   height: 20px;
   border-radius: 50%;
@@ -1535,7 +1596,7 @@ select.edit-input {
 }
 
 .remove-pair-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(25, 118, 210, 0.3);
 }
 
 /* Array Edit Container Styles */
@@ -1562,8 +1623,8 @@ select.edit-input {
 .selected-tag {
   display: inline-flex;
   align-items: center;
-  background: #6c757d;
-  color: white;
+  background-color: #e3f2fd;
+  color: #1976d2;
   padding: 6px 12px;
   border-radius: 20px;
   font-size: 12px;
@@ -1573,9 +1634,9 @@ select.edit-input {
 }
 
 .selected-tag button {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(25, 118, 210, 0.2);
   border: none;
-  color: white;
+  color: #1976d2;
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -1589,7 +1650,7 @@ select.edit-input {
 }
 
 .selected-tag button:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(25, 118, 210, 0.3);
 }
 
 .add-item {
@@ -2729,4 +2790,21 @@ select.edit-input {
 
 .send-button:active {
   transform: translateY(0);
+}
+
+/* Full width EMR pairs */
+.detail-item.full-width {
+  display: block;
+}
+
+.detail-item.full-width .detail-value {
+  width: 100%;
+  margin-left: 0;
+}
+
+/* Add New Pair Button Styles */
+.add-new-pair-btn:hover {
+  background: #1976d2 !important;
+  color: white !important;
+  border-color: #1976d2 !important;
 }

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Noted</title>
+    <title>SessyNote</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -84,10 +84,11 @@
       <div class="top-header">
         <div class="menu-icon" id="menu-toggle">☰</div>
         <div class="logo">
-          <div class="logo-icon">🧠</div>
-          <span class="logo-text">Noted</span>
+          <div class="logo-icon"><img src="icons/icon48.png" alt="SessyNote"></div>
+          <span class="logo-text">SessyNote</span>
         </div>
         <div class="header-actions">
+          <div class="action-icon" id="toggle-side-panel" title="Toggle Side Panel">✕</div>
           <div class="action-icon" title="Share">↗️</div>
           <div class="action-icon" title="Next">▶️</div>
         </div>
@@ -97,23 +98,23 @@
       <div class="side-menu" id="side-menu">
         <div class="menu-content">
           <div class="menu-item" data-page="home">
-            <div class="menu-icon">🏠</div>
+            <span class="menu-icon-simple">🏠</span>
             <span class="menu-text">Home</span>
           </div>
           <div class="menu-item" data-page="clients">
-            <div class="menu-icon">👤</div>
+            <span class="menu-icon-simple">👥</span>
             <span class="menu-text">Clients</span>
           </div>
           <div class="menu-item" data-page="profile">
-            <div class="menu-icon">👤</div>
+            <span class="menu-icon-simple">👤</span>
             <span class="menu-text">My Profile</span>
           </div>
           <div class="menu-item" data-page="settings">
-            <div class="menu-icon">⚙️</div>
+            <span class="menu-icon-simple">⚙️</span>
             <span class="menu-text">Settings</span>
           </div>
           <div class="menu-item" id="sign-out-btn">
-            <div class="menu-icon">↪️</div>
+            <span class="menu-icon-simple">↪</span>
             <span class="menu-text">Sign-out</span>
           </div>
         </div>
@@ -127,7 +128,7 @@
         <!-- Home Page Content -->
         <div class="page-content" id="home-page">
           <div class="content-header">
-            <h2>Welcome to Noted</h2>
+            <h2>Welcome to SessyNote</h2>
             <p>Your EMR capture dashboard</p>
           </div>
 
@@ -286,11 +287,10 @@
               </div>
               
               <div class="section-content" id="emr-info-content">
-                <div class="detail-item">
-                  <span class="detail-label">EMR System</span>
-                  <span class="detail-value">
-                    <a href="#" class="emr-link" id="profile-emr-system">MyEnvolve + Lets see</a>
-                  </span>
+                <div class="detail-item full-width">
+                  <div class="detail-value" id="profile-emr-system">
+                    <a href="#" class="emr-link">MyEnvolve + Lets see</a>
+                  </div>
                 </div>
                 <div class="detail-item">
                   <span class="detail-label">Coping Skills</span>
