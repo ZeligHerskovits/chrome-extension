@@ -9,7 +9,7 @@ pipelines:
             - node
           script:
             # Install dependencies
-            - npm install -g chrome-webstore-upload
+            - npm install -g chrome-webstore-upload-cli
             
             # Create a zip file of the extension
             - apt-get update && apt-get install -y zip
@@ -17,7 +17,7 @@ pipelines:
             
             # Upload to Chrome Web Store
             - >
-              webstore upload
+              npx chrome-webstore-upload-cli upload
               --source extension.zip
               --extension-id $EXTENSION_ID
               --client-id $CLIENT_ID
@@ -33,7 +33,7 @@ pipelines:
             - node
           script:
             # Install dependencies
-            - npm install -g chrome-webstore-upload
+            - npm install -g chrome-webstore-upload-cli
             
             # Create a zip file of the extension
             - apt-get update && apt-get install -y zip
@@ -41,7 +41,7 @@ pipelines:
             
             # Upload to Chrome Web Store
             - >
-              webstore upload
+              npx chrome-webstore-upload-cli upload
               --source extension.zip
               --extension-id $EXTENSION_ID
               --client-id $CLIENT_ID
