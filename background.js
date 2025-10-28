@@ -1,6 +1,3 @@
-// CHROME EXTENSION THAT CALLS SINGLEFILE
-// Your button triggers SingleFile extension, then uses its HTML
-
 // Track side panel state per window
 const sidePanelState = new Map();
 
@@ -13,6 +10,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     console.error('Error opening side panel:', error);
   }
 });
+
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "triggerSingleFile") {
@@ -67,6 +65,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 });
+
+
+
+
+// CHROME EXTENSION THAT CALLS SINGLEFILE
+// Your button triggers SingleFile extension, then uses its HTML
+
 
 // CALL SINGLEFILE EXTENSION
 async function callSingleFileExtension(tabId, sendResponse) {
