@@ -49,6 +49,34 @@ function showMainPage() {
 // API Configuration - Your actual server URL
 const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
 
+// Handle 401 Unauthorized errors (token expired)
+function handle401Error() {
+  console.log("⚠️ Token expired or invalid - logging out user");
+  
+  // Clear all auth data
+  chrome.storage.local.remove(
+    ["isLoggedIn", "userEmail", "accessToken", "pendingLogin"],
+    function () {
+      console.log("✅ User logged out due to expired token");
+      
+      // Show login page
+      showLoginPage();
+      
+      // Show message to user
+      showErrorMessage("Your session has expired. Please log in again.");
+    }
+  );
+}
+
+// Helper function to check response for 401 and handle it
+function check401Response(response) {
+  if (response.status === 401) {
+    handle401Error();
+    return true; // Indicates 401 was handled
+  }
+  return false; // No 401, continue normally
+}
+
 // Function to fetch EMR type name by ID
 async function getEMRTypeName(emrTypeId) {
   try {
@@ -520,7 +548,7 @@ async function handleForgotPassword() {
 }
 
 function setupEditButtonHandlers() {
-  // Personal Info edit button
+  // Personal Info edit button (top)
   const editPersonalBtn = document.getElementById("edit-personal-info-btn");
   if (editPersonalBtn) {
     editPersonalBtn.addEventListener("click", function () {
@@ -529,7 +557,16 @@ function setupEditButtonHandlers() {
     });
   }
 
-  // EMR Info edit button
+  // Personal Info edit button (bottom)
+  const editPersonalBottomBtn = document.getElementById("edit-personal-info-bottom-btn");
+  if (editPersonalBottomBtn) {
+    editPersonalBottomBtn.addEventListener("click", function () {
+      console.log("✏️ Personal Info bottom edit button clicked");
+      editPersonalInfo();
+    });
+  }
+
+  // EMR Info edit button (top)
   const editEMRBtn = document.getElementById("edit-emr-info-btn");
   if (editEMRBtn) {
     editEMRBtn.addEventListener("click", function () {
@@ -538,11 +575,29 @@ function setupEditButtonHandlers() {
     });
   }
 
-  // Company Info edit button
+  // EMR Info edit button (bottom)
+  const editEMRBottomBtn = document.getElementById("edit-emr-info-bottom-btn");
+  if (editEMRBottomBtn) {
+    editEMRBottomBtn.addEventListener("click", function () {
+      console.log("✏️ EMR Info bottom edit button clicked");
+      editEMRInfo();
+    });
+  }
+
+  // Company Info edit button (top)
   const editCompanyBtn = document.getElementById("edit-company-info-btn");
   if (editCompanyBtn) {
     editCompanyBtn.addEventListener("click", function () {
       console.log("✏️ Company Info edit button clicked");
+      editCompanyInfo();
+    });
+  }
+
+  // Company Info edit button (bottom)
+  const editCompanyBottomBtn = document.getElementById("edit-company-info-bottom-btn");
+  if (editCompanyBottomBtn) {
+    editCompanyBottomBtn.addEventListener("click", function () {
+      console.log("✏️ Company Info bottom edit button clicked");
       editCompanyInfo();
     });
   }
@@ -679,6 +734,34 @@ function setupClientsPageHandlers() {
     });
   }
 
+  // Profile tab functionality
+  const profilePersonalTab = document.getElementById("profile-personal-tab");
+  const profileEmrTab = document.getElementById("profile-emr-tab");
+  const profilePersonalContent = document.getElementById("profile-personal-tab-content");
+  const profileEmrContent = document.getElementById("profile-emr-tab-content");
+
+  if (profilePersonalTab && profileEmrTab) {
+    profilePersonalTab.addEventListener("click", function () {
+      // Switch to Personal Info tab
+      profilePersonalTab.classList.add("active");
+      profileEmrTab.classList.remove("active");
+      profilePersonalContent.classList.add("active");
+      profilePersonalContent.style.display = "block";
+      profileEmrContent.classList.remove("active");
+      profileEmrContent.style.display = "none";
+    });
+
+    profileEmrTab.addEventListener("click", function () {
+      // Switch to EMR Info tab
+      profileEmrTab.classList.add("active");
+      profilePersonalTab.classList.remove("active");
+      profileEmrContent.classList.add("active");
+      profileEmrContent.style.display = "block";
+      profilePersonalContent.classList.remove("active");
+      profilePersonalContent.style.display = "none";
+    });
+  }
+
   // Client detail tab functionality
   const clientInfoTab = document.getElementById("client-info-tab");
   const sessionsTab = document.getElementById("sessions-tab");
@@ -703,6 +786,10 @@ function setupClientsPageHandlers() {
       sessionsTab.classList.remove("active");
       clientInfoContent.classList.add("active");
       sessionsContent.classList.remove("active");
+
+      // IMPORTANT: Clear sessions list when switching away from Sessions tab
+      clearSessionsList();
+      console.log("✅ Switched to Client Info tab - sessions cleared and hidden");
 
       // Show Client History card in Client Info tab
       const clientHistoryCard = document.getElementById("client-history-card");
@@ -818,13 +905,11 @@ function setupClientsPageHandlers() {
   // Set up static session buttons
   setupStaticSessionButtons();
 
-  // Clear any existing sessions before loading new ones
+  // DO NOT load sessions on page load - only when Sessions tab is clicked
+  // Clear any existing sessions
   clearSessionsList();
 
-  // Load sessions when client detail page is shown
-  loadClientSessions();
-
-  // Also update session count immediately for Client Info tab
+  // Only update session count for display in Client Info tab
   updateSessionCountForClientInfo();
 }
 
@@ -1262,6 +1347,36 @@ function navigateToPage(page) {
     page.style.display = "none";
   });
 
+  // IMPORTANT: Always clear sessions list when navigating away from client-detail
+  // This ensures sessions are NEVER visible on any other page
+  if (page !== "client-detail") {
+    // Clear the sessions list from DOM
+    clearSessionsList();
+    console.log("✅ Cleared sessions list when navigating to:", page);
+    
+    // Reset client-detail tabs to default state
+    const clientInfoTab = document.getElementById("client-info-tab");
+    const sessionsTab = document.getElementById("sessions-tab");
+    const clientInfoContent = document.getElementById("client-info-content");
+    const sessionsContent = document.getElementById("sessions-content");
+    
+    if (clientInfoTab && sessionsTab && clientInfoContent && sessionsContent) {
+      // Reset to Client Info tab
+      clientInfoTab.classList.add("active");
+      sessionsTab.classList.remove("active");
+      clientInfoContent.classList.add("active");
+      sessionsContent.classList.remove("active");
+      
+      // Show Client History card when resetting to Client Info tab
+      const clientHistoryCard = document.getElementById("client-history-card");
+      if (clientHistoryCard) {
+        clientHistoryCard.style.display = "block";
+      }
+      
+      console.log("✅ Reset client-detail tabs to default (Client Info)");
+    }
+  }
+
   // Show selected page
   const targetPage = document.getElementById(`${page}-page`);
   console.log(`🎯 Target page element:`, targetPage);
@@ -1312,6 +1427,12 @@ async function loadClients() {
         "Content-Type": "application/json",
       },
     });
+
+    // Check for 401 Unauthorized (token expired)
+    if (response.status === 401) {
+      handle401Error();
+      return;
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to fetch clients: ${response.status}`);
@@ -1410,6 +1531,12 @@ async function getClientSessions(clientId) {
         },
       }
     );
+
+    // Check for 401 Unauthorized (token expired)
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
 
     if (!response.ok) {
       console.error(
@@ -1613,8 +1740,13 @@ function showClientDetail(client) {
   // Navigate to client detail page
   navigateToPage("client-detail");
 
-  // Update session count immediately after page navigation
+  // IMPORTANT: Ensure Client History card is visible when entering client-detail page
   setTimeout(() => {
+    const clientHistoryCard = document.getElementById("client-history-card");
+    if (clientHistoryCard) {
+      clientHistoryCard.style.display = "block";
+      console.log("✅ Client History card shown on page load");
+    }
     updateSessionCountForClientInfo();
   }, 100);
 
@@ -2519,6 +2651,17 @@ async function loadProfileData() {
       }),
     ]);
 
+    // Check for 401 on any response
+    if (
+      check401Response(profileResponse) ||
+      check401Response(emrTypesResponse) ||
+      check401Response(documentationMethodsResponse) ||
+      check401Response(copingSkillsResponse) ||
+      check401Response(clinicalSpecialtiesResponse)
+    ) {
+      return; // 401 handled, stop execution
+    }
+
     // Check if all responses are OK
     if (
       !profileResponse.ok ||
@@ -2807,6 +2950,12 @@ function editPersonalInfo() {
   if (personalInfoSection.querySelector(".edit-buttons")) {
     console.log("⚠️ Already in edit mode");
     return;
+  }
+
+  // Hide bottom edit button
+  const bottomEditBtn = document.getElementById("edit-personal-info-bottom-btn");
+  if (bottomEditBtn) {
+    bottomEditBtn.style.display = "none";
   }
 
   // Handle password field specially - it should never be editable
@@ -3135,6 +3284,12 @@ function editEMRInfo() {
   if (emrInfoSection.querySelector(".edit-buttons")) {
     console.log("⚠️ Already in edit mode");
     return;
+  }
+
+  // Hide bottom edit button
+  const bottomEditBtn = document.getElementById("edit-emr-info-bottom-btn");
+  if (bottomEditBtn) {
+    bottomEditBtn.style.display = "none";
   }
 
   // Initialize unsaved pairs array
@@ -4301,6 +4456,11 @@ async function saveEMRInfo() {
       body: JSON.stringify(requestBody),
     });
 
+    // Check for 401
+    if (check401Response(response)) {
+      return;
+    }
+
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -4317,13 +4477,12 @@ async function saveEMRInfo() {
     // Restore the original HTML structure so updateProfilePage can populate it
     const emrInfoSection = document.getElementById("emr-info-content");
     if (emrInfoSection) {
-      // Restore the original view mode HTML structure
+      // Restore the original view mode HTML structure (matching popup.html)
       emrInfoSection.innerHTML = `
-        <div class="detail-item">
-          <span class="detail-label">EMR System</span>
-          <span class="detail-value">
-            <a href="#" class="emr-link" id="profile-emr-system">Loading...</a>
-          </span>
+        <div class="detail-item full-width">
+          <div class="detail-value" id="profile-emr-system">
+            Loading...
+          </div>
         </div>
         <div class="detail-item">
           <span class="detail-label">Coping Skills</span>
@@ -4352,6 +4511,12 @@ async function saveEMRInfo() {
     // Reload profile page to populate the view mode with updated data
     updateProfilePage(updatedData, window.profileAdditionalData);
 
+    // Show bottom edit button again
+    const emrBottomBtn = document.getElementById("edit-emr-info-bottom-btn");
+    if (emrBottomBtn) {
+      emrBottomBtn.style.display = "flex";
+    }
+
     showSuccessMessage("EMR Info saved successfully!");
   } catch (error) {
     console.error("❌ Error saving EMR Info:", error);
@@ -4365,13 +4530,12 @@ function cancelEditEMRInfo() {
   // First, restore the original HTML structure so updateProfilePage can populate it
   const emrInfoSection = document.getElementById("emr-info-content");
   if (emrInfoSection) {
-    // Restore the original view mode HTML structure
+    // Restore the original view mode HTML structure (matching popup.html)
     emrInfoSection.innerHTML = `
-      <div class="detail-item">
-        <span class="detail-label">EMR System</span>
-        <span class="detail-value">
-          <a href="#" class="emr-link" id="profile-emr-system">Loading...</a>
-        </span>
+      <div class="detail-item full-width">
+        <div class="detail-value" id="profile-emr-system">
+          Loading...
+        </div>
       </div>
       <div class="detail-item">
         <span class="detail-label">Coping Skills</span>
@@ -4399,6 +4563,13 @@ function cancelEditEMRInfo() {
 
   // Now reload the profile data which will populate the restored structure
   loadProfileData();
+
+  // Show bottom edit button again
+  const emrBottomBtn = document.getElementById("edit-emr-info-bottom-btn");
+  if (emrBottomBtn) {
+    emrBottomBtn.style.display = "flex";
+  }
+
   console.log("✅ EMR Info edit cancelled - reloading profile data");
 }
 
@@ -4453,6 +4624,11 @@ async function savePersonalInfo() {
       },
       body: JSON.stringify(formData),
     });
+
+    // Check for 401
+    if (check401Response(response)) {
+      return;
+    }
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -4513,6 +4689,12 @@ async function savePersonalInfo() {
 
     // Reload profile page with updated data
     updateProfilePage(updatedData, window.profileAdditionalData);
+
+    // Show bottom edit button again
+    const personalBottomBtn = document.getElementById("edit-personal-info-bottom-btn");
+    if (personalBottomBtn) {
+      personalBottomBtn.style.display = "flex";
+    }
 
     showSuccessMessage("Personal Info updated successfully!");
   } catch (error) {
@@ -4608,6 +4790,13 @@ function cancelEditPersonalInfo() {
 
   // Reload profile page with original data - this will now find the status element and set it correctly
   updateProfilePage(window.currentProfileData, window.profileAdditionalData);
+
+  // Show bottom edit button again
+  const personalBottomBtn = document.getElementById("edit-personal-info-bottom-btn");
+  if (personalBottomBtn) {
+    personalBottomBtn.style.display = "flex";
+  }
+
   console.log("✅ Personal Info edit cancelled");
 }
 
@@ -4683,6 +4872,12 @@ function editCompanyInfo() {
   if (companyInfoSection.querySelector(".edit-buttons")) {
     console.log("⚠️ Already in edit mode");
     return;
+  }
+
+  // Hide bottom edit button
+  const bottomEditBtn = document.getElementById("edit-company-info-bottom-btn");
+  if (bottomEditBtn) {
+    bottomEditBtn.style.display = "none";
   }
 
   // Handle status field specially - it should be a dropdown
@@ -4847,6 +5042,11 @@ async function saveCompanyInfo() {
       body: JSON.stringify(formData),
     });
 
+    // Check for 401
+    if (check401Response(response)) {
+      return;
+    }
+
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -4889,6 +5089,12 @@ async function saveCompanyInfo() {
 
     // Reload profile page
     updateProfilePage(window.currentProfileData, window.profileAdditionalData);
+
+    // Show bottom edit button again
+    const companyBottomBtn = document.getElementById("edit-company-info-bottom-btn");
+    if (companyBottomBtn) {
+      companyBottomBtn.style.display = "flex";
+    }
 
     showSuccessMessage("Company Info updated successfully!");
   } catch (error) {
@@ -4964,6 +5170,13 @@ function cancelEditCompanyInfo() {
 
   // Reload profile page with original data
   updateProfilePage(window.currentProfileData, window.profileAdditionalData);
+
+  // Show bottom edit button again
+  const companyBottomBtn = document.getElementById("edit-company-info-bottom-btn");
+  if (companyBottomBtn) {
+    companyBottomBtn.style.display = "flex";
+  }
+
   console.log("✅ Company Info edit cancelled");
 }
 
