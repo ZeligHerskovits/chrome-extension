@@ -6763,42 +6763,24 @@ function captureFastHTML() {
     button.disabled = true;
   }
 
-  // Send message to background script with timeout
+  // Get the current tab and send capture message
   chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     if (tabs[0]) {
-      // Set timeout to prevent infinite waiting (3 minutes for Quickbase)
-      const timeout = setTimeout(() => {
-        console.error("❌ Capture timeout - taking too long");
-        showErrorMessage("Capture is taking too long. Please try again.");
-        if (button) {
-          button.textContent = "Send EMR Request";
-          button.disabled = false;
-        }
-      }, 180000); // 3 minute timeout (allows for 2 minute Quickbase wait)
-
+      // Send message to background script to capture and download
       chrome.runtime.sendMessage(
         {
-          action: "triggerSingleFile",
-          tabId: tabs[0].id,
+          action: "captureAndDownload",
+          url: tabs[0].url
         },
         function (response) {
-          clearTimeout(timeout); // Clear timeout if we get a response
-          console.log("📨 SingleFile response:", response);
+          console.log("📨 Capture response:", response);
 
           if (response && response.success) {
-            console.log("✅ SingleFile capture successful");
-            console.log("📊 SingleFile data:", {
-              htmlLength: response.data.html ? response.data.html.length : 0,
-            });
-            createSingleFileHTML(response.data);
+            console.log("✅ Page capture initiated");
+            showSuccessMessage("Page captured successfully! Check your downloads.");
           } else {
-            console.error("❌ SingleFile capture failed:", response?.error);
-            // Display user-friendly error message
-            const errorMsg =
-              response?.displayError ||
-              response?.error ||
-              "Unknown error occurred during capture";
-            showErrorMessage(errorMsg);
+            console.error("❌ Capture failed:", response?.error);
+            showErrorMessage("Failed to capture page. Please try again.");
           }
 
           // Reset button
