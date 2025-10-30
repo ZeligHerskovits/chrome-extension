@@ -1,4 +1,4 @@
-// FAST CAPTURE - Popup Script
+﻿// FAST CAPTURE - Popup Script
 // Handles captured data and creates HTML file quickly
 
 document.addEventListener("DOMContentLoaded", function () {
@@ -723,6 +723,7 @@ function setupClientsPageHandlers() {
   setupAddClientModal();
   setupConfirmDeleteModal();
   setupEditSessionModal();
+  setupAddSessionModal();
 
   // Add history button functionality
   const addHistoryBtn = document.getElementById("add-history-btn");
@@ -811,9 +812,35 @@ function setupClientsPageHandlers() {
         clientHistoryCard.style.display = "none";
       }
 
+      // Show add session button when in Sessions tab
+      const addSessionBtnContainer = document.getElementById("add-session-btn-container");
+      if (addSessionBtnContainer) {
+        addSessionBtnContainer.style.display = "block";
+      }
+
       // Clear and reload sessions to ensure fresh data
       clearSessionsList();
       loadClientSessions();
+    });
+  }
+
+  // Client Info tab - hide add session button
+  if (clientInfoTab) {
+    clientInfoTab.addEventListener("click", function () {
+      // Hide add session button when not in Sessions tab
+      const addSessionBtnContainer = document.getElementById("add-session-btn-container");
+      if (addSessionBtnContainer) {
+        addSessionBtnContainer.style.display = "none";
+      }
+    });
+  }
+
+  // Add session button functionality
+  const addSessionBtn = document.getElementById("add-session-btn");
+  if (addSessionBtn) {
+    addSessionBtn.addEventListener("click", function () {
+      console.log("➕ Add session button clicked");
+      showAddSessionModal();
     });
   }
 
@@ -1394,9 +1421,66 @@ function navigateToPage(page) {
     loadProfileData();
   } else if (page === "session-detail") {
     loadSessionAINotes();
+  } else if (page === "emr-types") {
+    loadDocumentationMethods();
   }
 
   console.log(`📄 Navigated to ${page} page`);
+}
+
+async function loadDocumentationMethods() {
+  const documentationMethodSelect = document.getElementById("documentation-method");
+  
+  if (!documentationMethodSelect) {
+    console.error("❌ Documentation method select element not found");
+    return;
+  }
+
+  try {
+    // Get access token
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found. Please log in again.");
+    }
+
+    // Fetch documentation methods from API
+    const response = await fetch(`${API_BASE_URL}/documentation-methods/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    // Check for 401 Unauthorized (token expired)
+    if (response.status === 401) {
+      handle401Error();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch documentation methods: ${response.status}`);
+    }
+
+    const methods = await response.json();
+    console.log("📋 Documentation methods fetched:", methods);
+
+    // Clear existing options (except the first placeholder)
+    documentationMethodSelect.innerHTML = '<option value="">Select Documentation Method</option>';
+
+    // Add each documentation method as an option
+    methods.forEach(method => {
+      const option = document.createElement("option");
+      option.value = method.id;
+      option.textContent = method.name;
+      documentationMethodSelect.appendChild(option);
+    });
+
+    console.log(`✅ Loaded ${methods.length} documentation methods`);
+  } catch (error) {
+    console.error("❌ Error loading documentation methods:", error);
+    showErrorMessage(`Failed to load documentation methods: ${error.message}`);
+  }
 }
 
 async function loadClients() {
@@ -5482,6 +5566,306 @@ function setupEditSessionModal() {
   }
 }
 
+function setupAddSessionModal() {
+  // Close modal when clicking X
+  const closeBtn = document.getElementById("close-add-session");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", hideAddSessionModal);
+  }
+
+  // Close modal when clicking outside
+  const modal = document.getElementById("add-session-modal");
+  if (modal) {
+    modal.addEventListener("click", function (event) {
+      if (event.target === modal) {
+        hideAddSessionModal();
+      }
+    });
+  }
+
+  // Save session button
+  const saveBtn = document.getElementById("save-add-session");
+  if (saveBtn) {
+    saveBtn.addEventListener("click", saveNewSession);
+  }
+}
+
+function hideAddSessionModal() {
+  const modal = document.getElementById("add-session-modal");
+  if (modal) {
+    modal.style.display = "none";
+  }
+}
+
+async function showAddSessionModal() {
+  const modal = document.getElementById("add-session-modal");
+  if (!modal) return;
+
+  modal.style.display = "block";
+
+  // Load clients and EMR types
+  await loadClientsForSessionModal();
+  await loadEMRTypesForSessionModal();
+
+  // Setup EMR type change handler to load dynamic fields
+  const emrTypeSelect = document.getElementById("new-session-emr-type");
+  if (emrTypeSelect) {
+    emrTypeSelect.addEventListener("change", async function() {
+      const emrTypeId = this.value;
+      if (emrTypeId) {
+        console.log("🔑 EMR Type selected:", emrTypeId);
+        await loadAddSessionDynamicFields(emrTypeId);
+      } else {
+        // Clear fields if no EMR type selected
+        const container = document.getElementById("add-session-dynamic-fields-container");
+        if (container) {
+          container.innerHTML = '<p style="color: #666; text-align: center;">Select an EMR Type to load fields</p>';
+        }
+      }
+    });
+  }
+
+  // Pre-select current client if viewing from client detail page
+  chrome.storage.local.get(["currentClient"], function (result) {
+    if (result.currentClient && result.currentClient.clientId) {
+      const clientSelect = document.getElementById("new-session-client");
+      if (clientSelect) {
+        clientSelect.value = result.currentClient.clientId;
+      }
+    }
+  });
+}
+
+async function loadClientsForSessionModal() {
+  const clientSelect = document.getElementById("new-session-client");
+  if (!clientSelect) return;
+
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/Clients`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch clients: ${response.status}`);
+    }
+
+    const clients = await response.json();
+    console.log("👥 Clients loaded for modal:", clients);
+
+    // Clear existing options except the first one
+    clientSelect.innerHTML = '<option value="">Select Client</option>';
+
+    // Add clients to dropdown
+    clients.forEach(client => {
+      const option = document.createElement("option");
+      option.value = client.id || client.client_id;
+      option.textContent = `${client.first_name || ""} ${client.last_name || ""}`.trim() || "Unknown Client";
+      clientSelect.appendChild(option);
+    });
+  } catch (error) {
+    console.error("❌ Error loading clients:", error);
+    showErrorMessage("Failed to load clients");
+  }
+}
+
+async function loadEMRTypesForSessionModal() {
+  const emrTypeSelect = document.getElementById("new-session-emr-type");
+  if (!emrTypeSelect) return;
+
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/emr-types/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch EMR types: ${response.status}`);
+    }
+
+    const emrTypes = await response.json();
+    console.log("📋 EMR types loaded for modal:", emrTypes);
+
+    // Clear existing options except the first one
+    emrTypeSelect.innerHTML = '<option value="">Select EMR Type</option>';
+
+    // Add EMR types to dropdown
+    emrTypes.forEach(emrType => {
+      const option = document.createElement("option");
+      option.value = emrType.id;
+      option.textContent = emrType.name || "Unknown Type";
+      emrTypeSelect.appendChild(option);
+    });
+  } catch (error) {
+    console.error("❌ Error loading EMR types:", error);
+    showErrorMessage("Failed to load EMR types");
+  }
+}
+
+async function loadAddSessionDynamicFields(emrTypeId) {
+  const container = document.getElementById("add-session-dynamic-fields-container");
+  if (!container) return;
+
+  // Clear existing dynamic fields
+  container.innerHTML = "<p>Loading fields...</p>";
+
+  try {
+    // Get dynamic fields data (just the field definitions, not values)
+    const dynamicFields = await getSessionDetailFields(emrTypeId);
+    console.log("📋 Dynamic fields for new session:", dynamicFields);
+
+    if (
+      !dynamicFields ||
+      !dynamicFields.confirmedResults ||
+      dynamicFields.confirmedResults.length === 0
+    ) {
+      container.innerHTML = "<p>No fields available for this session type.</p>";
+      return;
+    }
+
+    // Clear loading message
+    container.innerHTML = "";
+
+    // Create EMPTY form fields for each dynamic field (for creating new session)
+    dynamicFields.confirmedResults.forEach((result) => {
+      // Get the field type from EMR type fields
+      let emrField = dynamicFields.fields.find(
+        (field) => field.name === result.key
+      );
+
+      // Try case-insensitive matching if exact match not found
+      if (!emrField) {
+        emrField = dynamicFields.fields.find((field) => {
+          if (!field.name) return false;
+          const normalizedFieldName = field.name
+            .toLowerCase()
+            .replace(/-/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          const normalizedResultKey = result.key
+            .toLowerCase()
+            .replace(/-/g, "")
+            .replace(/\s+/g, " ")
+            .trim();
+          return normalizedFieldName === normalizedResultKey;
+        });
+      }
+
+      const fieldMapping = dynamicFields.fieldMapping;
+      let fieldName = fieldMapping[result.key];
+
+      if (!fieldName && emrField) {
+        fieldName = emrField.api_name;
+      }
+
+      let fieldType = emrField ? emrField.type : result.type;
+
+      if (
+        result.type === "boolean" &&
+        (!emrField || emrField.type !== "boolean")
+      ) {
+        fieldType = "boolean";
+      }
+
+      if (fieldName) {
+        const fieldContainer = document.createElement("div");
+        fieldContainer.className = "form-group";
+
+        const label = document.createElement("label");
+        label.textContent = result.key;
+        label.setAttribute(
+          "for",
+          `new-${result.key.replace(/\s+/g, "-").toLowerCase()}`
+        );
+
+        let input;
+
+        if (fieldType === "date") {
+          input = document.createElement("input");
+          input.type = "date";
+        } else if (fieldType === "datetime") {
+          input = document.createElement("input");
+          input.type = "datetime-local";
+        } else if (fieldType === "boolean") {
+          input = document.createElement("input");
+          input.type = "checkbox";
+        } else if (fieldType === "dropdown") {
+          input = document.createElement("select");
+          if (emrField && emrField.dropdown_values) {
+            const options = emrField.dropdown_values
+              .split("\n")
+              .filter((option) => option.trim());
+            options.forEach((option) => {
+              const optionElement = document.createElement("option");
+              optionElement.value = option.trim();
+              optionElement.textContent = option.trim();
+              input.appendChild(optionElement);
+            });
+          }
+        } else if (fieldType === "textarea") {
+          input = document.createElement("textarea");
+          input.rows = 3;
+        } else if (fieldType === "number") {
+          input = document.createElement("input");
+          input.type = "number";
+        } else if (fieldType === "email") {
+          input = document.createElement("input");
+          input.type = "email";
+        } else if (fieldType === "tel") {
+          input = document.createElement("input");
+          input.type = "tel";
+        } else {
+          input = document.createElement("input");
+          input.type = "text";
+        }
+
+        input.className = "form-input";
+        input.name = fieldName;
+        input.id = `new-${result.key.replace(/\s+/g, "-").toLowerCase()}`;
+
+        fieldContainer.appendChild(label);
+        fieldContainer.appendChild(input);
+        container.appendChild(fieldContainer);
+      }
+    });
+  } catch (error) {
+    console.error("❌ Error loading dynamic fields:", error);
+    container.innerHTML = "<p>Error loading fields. Please try again.</p>";
+  }
+}
+
+async function saveNewSession() {
+  console.log("🚀 Saving new session...");
+  // This will be implemented when you provide the API details
+  showErrorMessage("Session creation API not yet implemented");
+}
+
 function hideEditSessionModal() {
   const modal = document.getElementById("edit-session-modal");
   if (modal) {
@@ -6753,31 +7137,72 @@ function updateClientHistory(historyData) {
   }
 }
 
-function captureFastHTML() {
+async function captureFastHTML() {
   console.log("📋 Starting fast HTML capture...");
+
+  // Get form values
+  const emrTypeSelect = document.getElementById("emr-type");
+  const sessionTypeSelect = document.getElementById("session-type");
+  const documentationMethodSelect = document.getElementById("documentation-method");
+
+  if (!emrTypeSelect || !sessionTypeSelect || !documentationMethodSelect) {
+    showErrorMessage("Form elements not found. Please try again.");
+    return;
+  }
+
+  const emrTypeName = emrTypeSelect.options[emrTypeSelect.selectedIndex]?.text;
+  const sessionType = sessionTypeSelect.options[sessionTypeSelect.selectedIndex]?.text;
+  const documentationMethodId = documentationMethodSelect.value;
+
+  // Validate form fields
+  if (!emrTypeName || emrTypeSelect.value === "") {
+    showErrorMessage("Please select an EMR Type");
+    return;
+  }
+  if (!sessionType || sessionTypeSelect.value === "") {
+    showErrorMessage("Please select a Session Type");
+    return;
+  }
+  if (!documentationMethodId || documentationMethodId === "") {
+    showErrorMessage("Please select a Documentation Method");
+    return;
+  }
+
+  console.log("📋 Form values:", {
+    emrTypeName,
+    sessionType,
+    documentationMethodId
+  });
 
   // Show loading state
   const button = document.querySelector(".send-button");
   if (button) {
-    button.textContent = "Capturing...";
+    button.textContent = "Sending...";
     button.disabled = true;
   }
 
   // Get the current tab and send capture message
   chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     if (tabs[0]) {
-      // Send message to background script to capture and download
+      // Send message to background script to capture page
       chrome.runtime.sendMessage(
         {
-          action: "captureAndDownload",
+          action: "captureForAPI",
           url: tabs[0].url
         },
-        function (response) {
+        async function (response) {
           console.log("📨 Capture response:", response);
 
-          if (response && response.success) {
-            console.log("✅ Page capture initiated");
-            showSuccessMessage("Page captured successfully! Check your downloads.");
+          if (response && response.success && response.html) {
+            console.log("✅ Page captured successfully");
+            
+            // Send to API
+            await sendEMRTypeToAPI({
+              emrTypeName,
+              sessionType,
+              documentationMethodId,
+              htmlContent: response.html
+            });
           } else {
             console.error("❌ Capture failed:", response?.error);
             showErrorMessage("Failed to capture page. Please try again.");
@@ -6792,6 +7217,70 @@ function captureFastHTML() {
       );
     }
   });
+}
+
+async function sendEMRTypeToAPI(data) {
+  try {
+    console.log("🚀 Sending EMR type to API...");
+
+    // Get access token
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found. Please log in again.");
+    }
+
+    // Create FormData
+    const formData = new FormData();
+    formData.append("name", data.emrTypeName);
+    formData.append("session_type", data.sessionType);
+    formData.append("documentation_method_id", data.documentationMethodId);
+
+    // Create HTML file from captured content
+    const htmlBlob = new Blob([data.htmlContent], { type: "text/html" });
+    const fileName = `${data.emrTypeName.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().replace(/[:.]/g, '-')}.html`;
+    formData.append("files", htmlBlob, fileName);
+
+    console.log("📦 FormData prepared:", {
+      name: data.emrTypeName,
+      session_type: data.sessionType,
+      documentation_method_id: data.documentationMethodId,
+      file: fileName
+    });
+
+    // Send to API
+    const response = await fetch(`${API_BASE_URL}/emr-types/`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        // Don't set Content-Type header - browser will set it automatically with boundary for multipart/form-data
+      },
+      body: formData,
+    });
+
+    // Check for 401 Unauthorized (token expired)
+    if (response.status === 401) {
+      handle401Error();
+      return;
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+      throw new Error(errorData.message || `Failed to create EMR type: ${response.status}`);
+    }
+
+    const responseData = await response.json();
+    console.log("✅ EMR type created successfully:", responseData);
+    showSuccessMessage("EMR type created successfully!");
+
+    // Clear form
+    document.getElementById("emr-type").value = "";
+    document.getElementById("session-type").value = "";
+    document.getElementById("documentation-method").value = "";
+
+  } catch (error) {
+    console.error("❌ Error sending EMR type to API:", error);
+    showErrorMessage(`Failed to create EMR type: ${error.message}`);
+  }
 }
 
 function createSingleFileHTML(singleFileData) {

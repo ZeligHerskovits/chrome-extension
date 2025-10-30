@@ -848,6 +848,33 @@ body {
   gap: 0;
 }
 
+.add-session-btn-container {
+  position: absolute;
+  top: 12px;
+  right: 20px;
+  z-index: 10;
+}
+
+.add-session-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 50%;
+  background-color: #298997;
+  transition: background-color 0.2s;
+}
+
+.add-session-btn:hover {
+  background-color: #227882;
+}
+
+.add-session-btn .plus-icon {
+  color: white;
+}
+
 .tab-button {
   flex: 1;
   width: 50%;

@@ -15,13 +15,31 @@ chrome.action.onClicked.addListener(async (tab) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Handle page capture
+  // Handle page capture for download
   if (message.action === 'captureAndDownload') {
     // Get the active tab since message comes from popup/side panel
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]) {
         handlePageCapture(tabs[0].id, tabs[0].url);
         sendResponse({ success: true });
+      } else {
+        sendResponse({ success: false, error: 'No active tab found' });
+      }
+    });
+    return true; // Keep channel open for async response
+  }
+  
+  // Handle page capture for API (returns HTML instead of downloading)
+  if (message.action === 'captureForAPI') {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs[0]) {
+        try {
+          const html = await handlePageCaptureForAPI(tabs[0].id, tabs[0].url);
+          sendResponse({ success: true, html: html });
+        } catch (error) {
+          console.error('Error capturing page for API:', error);
+          sendResponse({ success: false, error: error.message });
+        }
       } else {
         sendResponse({ success: false, error: 'No active tab found' });
       }
@@ -95,6 +113,34 @@ async function handlePageCapture(tabId, url) {
     }
   } catch (error) {
     console.error('Error capturing page:', error);
+  }
+}
+
+async function handlePageCaptureForAPI(tabId, url) {
+  try {
+    console.log('📸 Starting page capture for API...');
+    
+    // Use same progressive capture method
+    const result = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: progressiveCapture
+    });
+
+    if (result && result[0] && result[0].result) {
+      const capturedData = result[0].result;
+      console.log(`✅ Captured using method: ${capturedData.method}`);
+      
+      // Build complete HTML
+      const completeHTML = buildProgressiveHTML(capturedData);
+      
+      // Return HTML instead of downloading
+      return completeHTML;
+    } else {
+      throw new Error('Failed to capture page content');
+    }
+  } catch (error) {
+    console.error('Error capturing page for API:', error);
+    throw error;
   }
 }
 
@@ -269,144 +315,146 @@ async function progressiveCapture() {
   }
 }
 
+// UNUSED - OLD APPROACH
 // Separate function to scroll the page and load all content
-function scrollPageToLoadAll() {
-  console.log('🔄 Starting auto-scroll...');
-  console.log('Page height:', document.body.scrollHeight, 'px');
-  console.log('Current position:', window.scrollY, 'px');
-  
-  return new Promise((resolve) => {
-    const scrollStep = 200; // Scroll 200px at a time
-    const scrollDelay = 500; // Wait 500ms between scrolls (SLOW, very visible)
-    let scrollCount = 0;
-    const maxScrolls = 50; // Maximum number of scroll attempts
-    
-    const scrollInterval = setInterval(() => {
-      const beforeScroll = window.scrollY;
-      const scrollHeight = document.body.scrollHeight;
-      const windowHeight = window.innerHeight;
-      
-      console.log(`Scroll #${scrollCount}: position ${beforeScroll}px, height ${scrollHeight}px`);
-      
-      // Scroll down
-      window.scrollBy(0, scrollStep);
-      scrollCount++;
-      
-      // Wait a bit then check if we actually scrolled
-      setTimeout(() => {
-        const afterScroll = window.scrollY;
-        const isAtBottom = (afterScroll + windowHeight) >= scrollHeight - 10;
-        const didntMove = Math.abs(afterScroll - beforeScroll) < 5;
-        
-        console.log(`After scroll: ${afterScroll}px, moved: ${afterScroll - beforeScroll}px, atBottom: ${isAtBottom}`);
-        
-        if (isAtBottom || didntMove || scrollCount >= maxScrolls) {
-          clearInterval(scrollInterval);
-          console.log('✅ Scroll complete, going back to top');
-          
-          // Scroll back to top
-          window.scrollTo(0, 0);
-          
-          setTimeout(() => {
-            console.log('✅ Auto-scroll complete!');
-            resolve();
-          }, 500);
-        }
-      }, 100);
-    }, scrollDelay);
-  });
-}
+// function scrollPageToLoadAll() {
+//   console.log('🔄 Starting auto-scroll...');
+//   console.log('Page height:', document.body.scrollHeight, 'px');
+//   console.log('Current position:', window.scrollY, 'px');
+//   
+//   return new Promise((resolve) => {
+//     const scrollStep = 200; // Scroll 200px at a time
+//     const scrollDelay = 500; // Wait 500ms between scrolls (SLOW, very visible)
+//     let scrollCount = 0;
+//     const maxScrolls = 50; // Maximum number of scroll attempts
+//     
+//     const scrollInterval = setInterval(() => {
+//       const beforeScroll = window.scrollY;
+//       const scrollHeight = document.body.scrollHeight;
+//       const windowHeight = window.innerHeight;
+//       
+//       console.log(`Scroll #${scrollCount}: position ${beforeScroll}px, height ${scrollHeight}px`);
+//       
+//       // Scroll down
+//       window.scrollBy(0, scrollStep);
+//       scrollCount++;
+//       
+//       // Wait a bit then check if we actually scrolled
+//       setTimeout(() => {
+//         const afterScroll = window.scrollY;
+//         const isAtBottom = (afterScroll + windowHeight) >= scrollHeight - 10;
+//         const didntMove = Math.abs(afterScroll - beforeScroll) < 5;
+//         
+//         console.log(`After scroll: ${afterScroll}px, moved: ${afterScroll - beforeScroll}px, atBottom: ${isAtBottom}`);
+//         
+//         if (isAtBottom || didntMove || scrollCount >= maxScrolls) {
+//           clearInterval(scrollInterval);
+//           console.log('✅ Scroll complete, going back to top');
+//           
+//           // Scroll back to top
+//           window.scrollTo(0, 0);
+//           
+//           setTimeout(() => {
+//             console.log('✅ Auto-scroll complete!');
+//             resolve();
+//           }, 500);
+//         }
+//       }, 100);
+//     }, scrollDelay);
+//   });
+// }
 
+// UNUSED - OLD APPROACH
 // This function runs in the context of the web page
-async function capturePageContent() {
-  console.log('📸 Starting page capture...');
-  
-  // Get the full HTML
-  const html = document.documentElement.outerHTML;
-  
-  // Get all inline styles
-  const inlineStyles = [];
-  document.querySelectorAll('style').forEach(style => {
-    inlineStyles.push(style.textContent);
-  });
-  
-  // Get all stylesheets (including external ones)
-  const externalStyles = [];
-  const stylesheetUrls = [];
-  const styleSheets = Array.from(document.styleSheets);
-  
-  for (const sheet of styleSheets) {
-    try {
-      // Try to access CSS rules directly
-      if (sheet.cssRules || sheet.rules) {
-        const rules = Array.from(sheet.cssRules || sheet.rules || []);
-        const css = rules.map(rule => rule.cssText).join('\n');
-        externalStyles.push(css);
-      }
-    } catch (e) {
-      // Cross-origin stylesheet - collect URL to fetch later
-      if (sheet.href) {
-        console.log('Will fetch external stylesheet:', sheet.href);
-        stylesheetUrls.push(sheet.href);
-      }
-    }
-  }
-  
-  // Fetch external stylesheets that we couldn't access directly
-  const fetchedStyles = [];
-  for (const url of stylesheetUrls) {
-    try {
-      const response = await fetch(url);
-      const cssText = await response.text();
-      fetchedStyles.push(cssText);
-      console.log('Successfully fetched:', url);
-    } catch (e) {
-      console.warn('Could not fetch stylesheet:', url, e);
-    }
-  }
-  
-  // Get all images and convert to base64
-  const images = [];
-  const imgElements = document.querySelectorAll('img');
-  
-  for (const img of imgElements) {
-    if (img.src && img.complete) {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth || img.width || 1;
-        canvas.height = img.naturalHeight || img.height || 1;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const base64 = canvas.toDataURL('image/png');
-        images.push({
-          src: img.src,
-          base64: base64
-        });
-      } catch (e) {
-        console.warn('Could not convert image to base64:', img.src, e);
-      }
-    }
-  }
-  
-  // Get computed styles for body to preserve background
-  const bodyStyles = window.getComputedStyle(document.body);
-  const backgroundColor = bodyStyles.backgroundColor;
-  const backgroundImage = bodyStyles.backgroundImage;
-  
-  console.log('Page capture complete');
-  
-  return {
-    html: html,
-    inlineStyles: inlineStyles,
-    externalStyles: externalStyles,
-    fetchedStyles: fetchedStyles,
-    images: images,
-    backgroundColor: backgroundColor,
-    backgroundImage: backgroundImage,
-    title: document.title,
-    url: window.location.href
-  };
-}
+// async function capturePageContent() {
+//   console.log('📸 Starting page capture...');
+//   
+//   // Get the full HTML
+//   const html = document.documentElement.outerHTML;
+//   
+//   // Get all inline styles
+//   const inlineStyles = [];
+//   document.querySelectorAll('style').forEach(style => {
+//     inlineStyles.push(style.textContent);
+//   });
+//   
+//   // Get all stylesheets (including external ones)
+//   const externalStyles = [];
+//   const stylesheetUrls = [];
+//   const styleSheets = Array.from(document.styleSheets);
+//   
+//   for (const sheet of styleSheets) {
+//     try {
+//       // Try to access CSS rules directly
+//       if (sheet.cssRules || sheet.rules) {
+//         const rules = Array.from(sheet.cssRules || sheet.rules || []);
+//         const css = rules.map(rule => rule.cssText).join('\n');
+//         externalStyles.push(css);
+//       }
+//     } catch (e) {
+//       // Cross-origin stylesheet - collect URL to fetch later
+//       if (sheet.href) {
+//         console.log('Will fetch external stylesheet:', sheet.href);
+//         stylesheetUrls.push(sheet.href);
+//       }
+//     }
+//   }
+//   
+//   // Fetch external stylesheets that we couldn't access directly
+//   const fetchedStyles = [];
+//   for (const url of stylesheetUrls) {
+//     try {
+//       const response = await fetch(url);
+//       const cssText = await response.text();
+//       fetchedStyles.push(cssText);
+//       console.log('Successfully fetched:', url);
+//     } catch (e) {
+//       console.warn('Could not fetch stylesheet:', url, e);
+//     }
+//   }
+//   
+//   // Get all images and convert to base64
+//   const images = [];
+//   const imgElements = document.querySelectorAll('img');
+//   
+//   for (const img of imgElements) {
+//     if (img.src && img.complete) {
+//       try {
+//         const canvas = document.createElement('canvas');
+//         canvas.width = img.naturalWidth || img.width || 1;
+//         canvas.height = img.naturalHeight || img.height || 1;
+//         const ctx = canvas.getContext('2d');
+//         ctx.drawImage(img, 0, 0);
+//         const base64 = canvas.toDataURL('image/png');
+//         images.push({
+//           src: img.src,
+//           base64: base64
+//         });
+//       } catch (e) {
+//         console.warn('Could not convert image to base64:', img.src, e);
+//       }
+//     }
+//   }
+//   
+//   // Get computed styles for body to preserve background
+//   const bodyStyles = window.getComputedStyle(document.body);
+//   const backgroundColor = bodyStyles.backgroundColor;
+//   const backgroundImage = bodyStyles.backgroundImage;
+//   
+//   console.log('Page capture complete');
+//   
+//   return {
+//     html: html,
+//     inlineStyles: inlineStyles,
+//     externalStyles: externalStyles,
+//     fetchedStyles: fetchedStyles,
+//     images: images,
+//     backgroundColor: backgroundColor,
+//     backgroundImage: backgroundImage,
+//     title: document.title,
+//     url: window.location.href
+//   };
+// }
 
 function buildProgressiveHTML(capturedData) {
   console.log('Building HTML from capture...');
@@ -450,67 +498,68 @@ function buildProgressiveHTML(capturedData) {
   return comment + html;
 }
 
-function buildCompleteHTML(pageData) {
-  let html = pageData.html;
-  
-  // Remove all script tags to prevent auto-refresh and errors
-  html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
-  
-  // Remove meta refresh tags
-  html = html.replace(/<meta[^>]*http-equiv=["']?refresh["']?[^>]*>/gi, '');
-  
-  // Remove noscript tags (not needed without scripts)
-  html = html.replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '');
-  
-  // Replace image sources with base64
-  pageData.images.forEach(img => {
-    html = html.replace(new RegExp(escapeRegExp(img.src), 'g'), img.base64);
-  });
-  
-  // Create a combined style block with all CSS
-  let combinedCSS = '';
-  
-  // Add inline styles
-  if (pageData.inlineStyles && pageData.inlineStyles.length > 0) {
-    combinedCSS += pageData.inlineStyles.join('\n');
-  }
-  
-  // Add external styles (from same-origin or accessible stylesheets)
-  if (pageData.externalStyles && pageData.externalStyles.length > 0) {
-    combinedCSS += '\n' + pageData.externalStyles.join('\n');
-  }
-  
-  // Add fetched external styles (from cross-origin stylesheets)
-  if (pageData.fetchedStyles && pageData.fetchedStyles.length > 0) {
-    combinedCSS += '\n/* Fetched external stylesheets */\n';
-    combinedCSS += pageData.fetchedStyles.join('\n');
-  }
-  
-  // Add body background styles if needed
-  if (pageData.backgroundColor) {
-    combinedCSS += `\nbody { background-color: ${pageData.backgroundColor} !important; }`;
-  }
-  if (pageData.backgroundImage && pageData.backgroundImage !== 'none') {
-    combinedCSS += `\nbody { background-image: ${pageData.backgroundImage} !important; }`;
-  }
-  
-  // Insert the combined CSS into the head
-  const styleTag = `<style id="captured-styles">\n${combinedCSS}\n</style>`;
-  
-  // Find </head> and insert before it
-  if (html.includes('</head>')) {
-    html = html.replace('</head>', `${styleTag}\n</head>`);
-  } else {
-    // If no </head>, insert at the beginning
-    html = styleTag + html;
-  }
-  
-  // Add a comment at the top indicating this is a captured page
-  const comment = `<!-- Captured by SessyNote from ${pageData.url} on ${new Date().toISOString()} -->\n`;
-  html = comment + html;
-  
-  return html;
-}
+// UNUSED - OLD APPROACH
+// function buildCompleteHTML(pageData) {
+//   let html = pageData.html;
+//   
+//   // Remove all script tags to prevent auto-refresh and errors
+//   html = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+//   
+//   // Remove meta refresh tags
+//   html = html.replace(/<meta[^>]*http-equiv=["']?refresh["']?[^>]*>/gi, '');
+//   
+//   // Remove noscript tags (not needed without scripts)
+//   html = html.replace(/<noscript\b[^<]*(?:(?!<\/noscript>)<[^<]*)*<\/noscript>/gi, '');
+//   
+//   // Replace image sources with base64
+//   pageData.images.forEach(img => {
+//     html = html.replace(new RegExp(escapeRegExp(img.src), 'g'), img.base64);
+//   });
+//   
+//   // Create a combined style block with all CSS
+//   let combinedCSS = '';
+//   
+//   // Add inline styles
+//   if (pageData.inlineStyles && pageData.inlineStyles.length > 0) {
+//     combinedCSS += pageData.inlineStyles.join('\n');
+//   }
+//   
+//   // Add external styles (from same-origin or accessible stylesheets)
+//   if (pageData.externalStyles && pageData.externalStyles.length > 0) {
+//     combinedCSS += '\n' + pageData.externalStyles.join('\n');
+//   }
+//   
+//   // Add fetched external styles (from cross-origin stylesheets)
+//   if (pageData.fetchedStyles && pageData.fetchedStyles.length > 0) {
+//     combinedCSS += '\n/* Fetched external stylesheets */\n';
+//     combinedCSS += pageData.fetchedStyles.join('\n');
+//   }
+//   
+//   // Add body background styles if needed
+//   if (pageData.backgroundColor) {
+//     combinedCSS += `\nbody { background-color: ${pageData.backgroundColor} !important; }`;
+//   }
+//   if (pageData.backgroundImage && pageData.backgroundImage !== 'none') {
+//     combinedCSS += `\nbody { background-image: ${pageData.backgroundImage} !important; }`;
+//   }
+//   
+//   // Insert the combined CSS into the head
+//   const styleTag = `<style id="captured-styles">\n${combinedCSS}\n</style>`;
+//   
+//   // Find </head> and insert before it
+//   if (html.includes('</head>')) {
+//     html = html.replace('</head>', `${styleTag}\n</head>`);
+//   } else {
+//     // If no </head>, insert at the beginning
+//     html = styleTag + html;
+//   }
+//   
+//   // Add a comment at the top indicating this is a captured page
+//   const comment = `<!-- Captured by SessyNote from ${pageData.url} on ${new Date().toISOString()} -->\n`;
+//   html = comment + html;
+//   
+//   return html;
+// }
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
