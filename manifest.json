@@ -1,7 +1,7 @@
-﻿{
+{
   "manifest_version": 3,
   "name": "SessyNote",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "A Chrome extension for capturing complete web pages with all resources",
   "permissions": [
     "activeTab",
@@ -18,8 +18,12 @@
   ],
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_end"
     }
   ],
@@ -39,8 +43,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["icons/*.png"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "icons/*.png"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }
