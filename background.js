@@ -47,6 +47,83 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Keep channel open for async response
   }
   
+  // Handle fetch EMR type request from content script
+  if (message.action === 'fetchEMRType') {
+    console.log('SessyNote: Fetching EMR type:', message.emrTypeId);
+    
+    chrome.storage.local.get(['accessToken'], async (result) => {
+      if (!result.accessToken) {
+        sendResponse({ success: false, error: 'No access token' });
+        return;
+      }
+      
+      try {
+        const response = await fetch(`https://noteddevapi.objectif.solutions/api/v1/emr-types/${message.emrTypeId}`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${result.accessToken}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch EMR type: ${response.status}`);
+        }
+        
+        const emrType = await response.json();
+        
+        // Parse response field if it's a JSON string
+        if (emrType.response && typeof emrType.response === 'string') {
+          try {
+            emrType.response = JSON.parse(emrType.response);
+          } catch (e) {
+            console.error('SessyNote: Failed to parse response field:', e);
+          }
+        }
+        
+        console.log('SessyNote: EMR type fetched:', emrType);
+        sendResponse({ success: true, emrType: emrType });
+        
+      } catch (error) {
+        console.error('SessyNote: Error fetching EMR type:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    });
+    return true; // Keep channel open for async response
+  }
+  
+  // Handle auto-fill session from content script
+  if (message.action === 'autoFillSession') {
+    console.log('SessyNote: Received autoFillSession message', message.data);
+    
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs[0]) {
+        const windowId = tabs[0].windowId;
+        
+        try {
+          // Open side panel
+          await chrome.sidePanel.open({ windowId: windowId });
+          sidePanelState.set(windowId, true);
+          console.log('SessyNote: Side panel opened for auto-fill');
+          
+          // Wait a bit for popup to load
+          setTimeout(() => {
+            // Send data to popup
+            chrome.runtime.sendMessage({
+              action: 'fillSessionData',
+              data: message.data
+            });
+            console.log('SessyNote: Sent fillSessionData to popup');
+          }, 500);
+          
+        } catch (error) {
+          console.error('SessyNote: Error opening panel for auto-fill:', error);
+        }
+      }
+    });
+    return true;
+  }
+  
   // Handle toggle side panel from content script
   if (message.action === "toggleSidePanel") {
     console.log('SessyNote: Received toggleSidePanel message');

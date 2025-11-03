@@ -69,3 +69,132 @@
   // Inject into page
   document.body.appendChild(toggleBtn);
 })();
+
+// ===============================
+// AUTO-SCRAPING AND SESSION AUTO-FILL
+// ===============================
+
+// Check URL on page load and navigation
+(async function() {
+  console.log('SessyNote: Auto-scraping initialized');
+  
+  // Check URL when page loads
+  await checkAndScrapeIfMatch();
+  
+  // Listen for URL changes (for SPAs)
+  let lastUrl = window.location.href;
+  const urlObserver = new MutationObserver(async () => {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      console.log('SessyNote: URL changed to', lastUrl);
+      await checkAndScrapeIfMatch();
+    }
+  });
+  
+  urlObserver.observe(document.body, { childList: true, subtree: true });
+})();
+
+async function checkAndScrapeIfMatch() {
+  try {
+    // Get stored EMR URL and type ID
+    const storage = await chrome.storage.local.get(['emrUrl', 'emrTypeId']);
+    
+    if (!storage.emrUrl || !storage.emrTypeId) {
+      console.log('SessyNote: No EMR URL or type ID stored, skipping');
+      return;
+    }
+    
+    // Extract domain from current URL
+    const currentDomain = window.location.hostname;
+    
+    console.log('SessyNote: Comparing domains:', currentDomain, 'vs', storage.emrUrl);
+    
+    // Check if domains match
+    if (currentDomain === storage.emrUrl) {
+      console.log('SessyNote: Domain match! Starting scrape...');
+      
+      // Ask background script to fetch EMR type (to avoid CORS)
+      chrome.runtime.sendMessage(
+        { action: 'fetchEMRType', emrTypeId: storage.emrTypeId },
+        async (response) => {
+          if (response && response.success && response.emrType) {
+            const emrType = response.emrType;
+            
+            if (!emrType.response) {
+              console.error('SessyNote: No response field in EMR type');
+              return;
+            }
+            
+            // Wait a bit for page to fully load
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Scrape data from page
+            const scrapedData = scrapePageData(emrType.response);
+            
+            console.log('SessyNote: Scraped data:', scrapedData);
+            
+            // Send to background script
+            chrome.runtime.sendMessage({
+              action: 'autoFillSession',
+              data: {
+                scrapedData: scrapedData,
+                emrTypeId: storage.emrTypeId
+              }
+            });
+          } else {
+            console.error('SessyNote: Failed to fetch EMR type:', response?.error);
+          }
+        }
+      );
+      
+    } else {
+      console.log('SessyNote: Domain does not match, skipping');
+    }
+  } catch (error) {
+    console.error('SessyNote: Error in checkAndScrapeIfMatch:', error);
+  }
+}
+
+function scrapePageData(responseFields) {
+  const scrapedData = {};
+  
+  // Iterate through each field in the response
+  for (const [fieldName, fieldConfig] of Object.entries(responseFields)) {
+    try {
+      const source = fieldConfig.source;
+      if (!source || !source.selector) {
+        console.warn(`SessyNote: No selector for field ${fieldName}`);
+        continue;
+      }
+      
+      // Find element using selector
+      const element = document.querySelector(source.selector);
+      
+      if (!element) {
+        console.warn(`SessyNote: Element not found for selector: ${source.selector}`);
+        continue;
+      }
+      
+      // Extract value based on attribute
+      let value = '';
+      const attribute = source.attribute || 'textContent';
+      
+      if (attribute === 'textContent') {
+        value = element.textContent.trim();
+      } else if (attribute === 'value') {
+        value = element.value;
+      } else {
+        value = element.getAttribute(attribute) || '';
+      }
+      
+      // Store with api_name as key
+      scrapedData[fieldConfig.api_name] = value;
+      console.log(`SessyNote: Scraped ${fieldConfig.api_name}:`, value);
+      
+    } catch (error) {
+      console.error(`SessyNote: Error scraping field ${fieldName}:`, error);
+    }
+  }
+  
+  return scrapedData;
+}

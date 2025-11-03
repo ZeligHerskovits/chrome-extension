@@ -430,7 +430,73 @@ async function handleSuccessfulLogin(accessToken, email) {
   });
 
   console.log("✅ User logged in successfully");
+  
+  // Fetch and cache emr_url
+  await fetchAndCacheEMRUrl(accessToken);
+  
   showMainPage();
+}
+
+async function fetchAndCacheEMRUrl(accessToken) {
+  try {
+    console.log("🔑 Fetching EMR URL...");
+
+    // Step 1: Fetch user profile
+    const profileResponse = await fetch(`${API_BASE_URL}/me`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!profileResponse.ok) {
+      console.error("❌ Failed to fetch profile:", profileResponse.status);
+      return;
+    }
+
+    const profileData = await profileResponse.json();
+    console.log("👤 Profile data:", profileData);
+
+    // Step 2: Get EMR type ID from first pair
+    const pairs = profileData.emr_type_documentation_pairs;
+    if (!pairs || pairs.length === 0) {
+      console.log("⚠️ No EMR type pairs found in profile");
+      await chrome.storage.local.set({ emrUrl: null });
+      return;
+    }
+
+    const emrTypeId = pairs[0].emr_type_id;
+    console.log("🔑 EMR Type ID:", emrTypeId);
+
+    // Step 3: Fetch EMR type details
+    const emrTypeResponse = await fetch(`${API_BASE_URL}/emr-types/${emrTypeId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!emrTypeResponse.ok) {
+      console.error("❌ Failed to fetch EMR type:", emrTypeResponse.status);
+      return;
+    }
+
+    const emrTypeData = await emrTypeResponse.json();
+    console.log("📋 EMR Type data:", emrTypeData);
+
+    // Step 4: Cache emr_url and emr_type_id
+    const emrUrl = emrTypeData.emr_url || "";
+    await chrome.storage.local.set({ 
+      emrUrl: emrUrl,
+      emrTypeId: emrTypeId 
+    });
+    console.log("✅ EMR URL cached:", emrUrl);
+    console.log("✅ EMR Type ID cached:", emrTypeId);
+  } catch (error) {
+    console.error("❌ Error fetching EMR URL:", error);
+  }
 }
 
 async function getOrCreateDeviceId() {
@@ -4602,6 +4668,10 @@ async function saveEMRInfo() {
     }
 
     showSuccessMessage("EMR Info saved successfully!");
+    
+    // Re-fetch and update EMR URL cache after saving
+    await fetchAndCacheEMRUrl(tokenResult.accessToken);
+    console.log("✅ EMR URL cache updated after save");
   } catch (error) {
     console.error("❌ Error saving EMR Info:", error);
     showErrorMessage("Failed to save EMR Info. Please try again.");
@@ -5600,6 +5670,18 @@ function hideAddSessionModal() {
 async function showAddSessionModal() {
   const modal = document.getElementById("add-session-modal");
   if (!modal) return;
+
+  // Clear the form first
+  const form = document.getElementById("add-session-form");
+  if (form) {
+    form.reset();
+  }
+
+  // Clear dynamic fields container
+  const container = document.getElementById("add-session-dynamic-fields-container");
+  if (container) {
+    container.innerHTML = '<p style="color: #666; text-align: center;">Select an EMR Type to load fields</p>';
+  }
 
   modal.style.display = "block";
 
@@ -7201,7 +7283,8 @@ async function captureFastHTML() {
               emrTypeName,
               sessionType,
               documentationMethodId,
-              htmlContent: response.html
+              htmlContent: response.html,
+              pageUrl: tabs[0].url
             });
           } else {
             console.error("❌ Capture failed:", response?.error);
@@ -7229,11 +7312,24 @@ async function sendEMRTypeToAPI(data) {
       throw new Error("No access token found. Please log in again.");
     }
 
+    // Extract domain from current page URL
+    const currentUrl = data.pageUrl || window.location.href;
+    let emrUrl = "";
+    try {
+      const urlObj = new URL(currentUrl);
+      emrUrl = urlObj.hostname; // e.g., "ysl.quickbase.com"
+      console.log("🌐 Extracted EMR URL:", emrUrl, "from", currentUrl);
+    } catch (error) {
+      console.error("❌ Error extracting URL:", error);
+      emrUrl = ""; // Fallback to empty if URL parsing fails
+    }
+
     // Create FormData
     const formData = new FormData();
     formData.append("name", data.emrTypeName);
     formData.append("session_type", data.sessionType);
     formData.append("documentation_method_id", data.documentationMethodId);
+    formData.append("emr_url", emrUrl);
 
     // Create HTML file from captured content
     const htmlBlob = new Blob([data.htmlContent], { type: "text/html" });
@@ -8203,4 +8299,229 @@ function createFastHTML(captureData) {
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// ===============================
+// AUTO-FILL SESSION FROM SCRAPED DATA
+// ===============================
+
+// Listen for fillSessionData message from background script
+chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  if (message.action === 'fillSessionData') {
+    console.log('SessyNote: Received fillSessionData in popup', message.data);
+    
+    try {
+      // Navigate to Sessions tab
+      navigateToPage('sessions');
+      
+      // Wait for page to load
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Trigger auto-fill
+      await autoFillSessionFromScrapedData(message.data);
+      
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('SessyNote: Error auto-filling session:', error);
+      sendResponse({ success: false, error: error.message });
+    }
+  }
+  return true;
+});
+
+async function autoFillSessionFromScrapedData(data) {
+  const { scrapedData, emrTypeId } = data;
+  
+  console.log('SessyNote: Starting auto-fill with data:', scrapedData);
+  
+  // First, find the client by name and navigate to their detail page
+  if (scrapedData.client) {
+    const clientId = await findClientIdByName(scrapedData.client);
+    
+    if (clientId) {
+      console.log('SessyNote: Found client ID:', clientId);
+      
+      // Navigate to Clients page first
+      navigateToPage('clients');
+      await new Promise(resolve => setTimeout(resolve, 300));
+      
+      // Navigate to client detail page
+      await navigateToClientDetail(clientId);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } else {
+      console.warn('SessyNote: Client not found, opening modal in Sessions tab');
+      navigateToPage('sessions');
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+  } else {
+    console.warn('SessyNote: No client in scraped data, opening modal in Sessions tab');
+    navigateToPage('sessions');
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  
+  // Open the New Session modal
+  await showAddSessionModal();
+  
+  // Wait for modal to fully load
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
+  // Select EMR type
+  const emrTypeSelect = document.getElementById('new-session-emr-type');
+  if (emrTypeSelect && emrTypeId) {
+    emrTypeSelect.value = emrTypeId;
+    
+    // Trigger change event to load dynamic fields
+    const changeEvent = new Event('change', { bubbles: true });
+    emrTypeSelect.dispatchEvent(changeEvent);
+    
+    // Wait for dynamic fields to load
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  
+  // Fill dynamic fields with scraped data
+  fillDynamicFields(scrapedData);
+  
+  console.log('SessyNote: Auto-fill complete');
+}
+
+async function findClientIdByName(clientName) {
+  console.log('SessyNote: Searching for client ID by name:', clientName);
+  
+  try {
+    const result = await chrome.storage.local.get(['accessToken']);
+    if (!result.accessToken) {
+      throw new Error('No access token found');
+    }
+    
+    // Fetch all clients
+    const response = await fetch(`${API_BASE_URL}/api/Clients`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${result.accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch clients: ${response.status}`);
+    }
+    
+    const clients = await response.json();
+    console.log('SessyNote: Fetched clients:', clients.length);
+    
+    // Normalize the scraped client name for comparison
+    const normalizedScrapedName = clientName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    // Try to find matching client
+    for (const client of clients) {
+      const clientFullName = `${client.first_name || ''} ${client.last_name || ''}`.trim();
+      const normalizedClientName = clientFullName.toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      // Check if names match (after normalization)
+      if (normalizedClientName === normalizedScrapedName || 
+          normalizedScrapedName.includes(normalizedClientName) || 
+          normalizedClientName.includes(normalizedScrapedName)) {
+        
+        console.log('SessyNote: Found matching client:', clientFullName, '- ID:', client.id || client.client_id);
+        return client.id || client.client_id;
+      }
+    }
+    
+    console.warn('SessyNote: No matching client found for:', clientName);
+    return null;
+    
+  } catch (error) {
+    console.error('SessyNote: Error finding client by name:', error);
+    return null;
+  }
+}
+
+async function navigateToClientDetail(clientId) {
+  console.log('SessyNote: Navigating to client detail:', clientId);
+  
+  try {
+    // Fetch client details
+    const result = await chrome.storage.local.get(['accessToken']);
+    const response = await fetch(`${API_BASE_URL}/api/Clients/${clientId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${result.accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch client: ${response.status}`);
+    }
+    
+    const client = await response.json();
+    console.log('SessyNote: Client details fetched:', client);
+    
+    // Store as current client
+    await chrome.storage.local.set({
+      currentClient: {
+        clientId: clientId,
+        ...client
+      }
+    });
+    
+    // Show client detail page
+    showClientDetail(client);
+    
+  } catch (error) {
+    console.error('SessyNote: Error navigating to client detail:', error);
+    throw error;
+  }
+}
+
+function fillDynamicFields(scrapedData) {
+  console.log('SessyNote: Filling dynamic fields with:', scrapedData);
+  
+  // Iterate through scraped data and fill corresponding fields
+  for (const [apiName, value] of Object.entries(scrapedData)) {
+    if (apiName === 'client') continue; // Already handled
+    
+    // Try to find the field by various possible IDs/names
+    const possibleIds = [
+      `new-${apiName}`,
+      `new-${apiName.replace(/_/g, '-')}`,
+      apiName,
+      apiName.replace(/_/g, '-')
+    ];
+    
+    let field = null;
+    for (const id of possibleIds) {
+      field = document.getElementById(id);
+      if (field) break;
+      
+      // Also try querySelector with name attribute
+      field = document.querySelector(`[name="${id}"]`);
+      if (field) break;
+    }
+    
+    if (field) {
+      // Fill the field based on its type
+      if (field.type === 'checkbox') {
+        field.checked = value === true || value === 'true' || value === '1' || value === 1;
+      } else if (field.tagName === 'SELECT') {
+        // For dropdowns, try to match value
+        const options = Array.from(field.options);
+        const matchingOption = options.find(opt => 
+          opt.value.toLowerCase() === value.toLowerCase() || 
+          opt.textContent.toLowerCase() === value.toLowerCase()
+        );
+        if (matchingOption) {
+          field.value = matchingOption.value;
+        } else {
+          field.value = value;
+        }
+      } else {
+        field.value = value;
+      }
+      
+      console.log(`SessyNote: Filled field ${apiName} with:`, value);
+    } else {
+      console.warn(`SessyNote: Field not found for ${apiName}`);
+    }
+  }
 }
