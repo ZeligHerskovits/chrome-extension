@@ -10,9 +10,27 @@ pipelines:
           script:
             # Install dependencies
             - npm install -g chrome-webstore-upload-cli
+            - apt-get update && apt-get install -y jq
+            
+            # Auto-increment version in manifest.json
+            - |
+              CURRENT_VERSION=$(jq -r '.version' manifest.json)
+              IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+              NEW_PATCH=$((patch + 1))
+              NEW_VERSION="$major.$minor.$NEW_PATCH"
+              jq --arg version "$NEW_VERSION" '.version = $version' manifest.json > manifest.tmp.json
+              mv manifest.tmp.json manifest.json
+              echo "Version updated from $CURRENT_VERSION to $NEW_VERSION"
+            
+            # Commit version change back to repository
+            - git config user.email "pipeline@bitbucket.org"
+            - git config user.name "Bitbucket Pipeline"
+            - git add manifest.json
+            - git commit -m "[skip ci] Bump version to $NEW_VERSION"
+            - git push origin main
             
             # Create a zip file of the extension
-            - apt-get update && apt-get install -y zip
+            - apt-get install -y zip
             - zip -r extension.zip . -x "*.git*" "node_modules/*" "bitbucket-pipelines.yml" "*.md" "package*.json"
             
             # Upload to Chrome Web Store
