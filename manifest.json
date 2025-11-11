@@ -3,15 +3,12 @@
   "name": "SessyNote",
   "version": "2.0.6",
   "description": "A Chrome extension for capturing complete web pages with all resources",
+  "short_name": "SessyNote",
   "permissions": [
-    "activeTab",
-    "scripting",
     "tabs",
+    "scripting",
     "storage",
-    "pageCapture",
-    "webNavigation",
-    "sidePanel",
-    "downloads"
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"

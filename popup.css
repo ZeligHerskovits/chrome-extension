@@ -2013,16 +2013,230 @@ select.edit-input {
   color: #2e7d32;
 }
 
-.session-detail-item {
+.detected-icon {
+  width: 24px;
+  height: 24px;
+  background-color: #4caf50;
+  color: white;
+  border-radius: 50%;
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid #f0f0f0;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
 }
 
-.session-detail-item:last-child {
+.detected-text {
+  font-size: 14px;
+  font-weight: 600;
+  color: #2e7d32;
+}
+
+/* Auto-detected session page specific styles */
+#auto-detected-session-page .tab-content {
+  padding: 0 20px;
+}
+
+#auto-session-detail-card {
+  background-color: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+  row-gap: 20px;
+}
+
+#auto-session-detail-card .card-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #333;
+  margin: 0 0 20px 0;
+  grid-column: 1 / -1; /* Span full width */
+}
+
+/* Make sure all dynamic fields appear inside the white card */
+/* No extra styling needed - they inherit from parent card */
+
+/* Truncate long text in auto-detected session fields */
+#auto-session-detail-card .detail-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  cursor: help; /* Show help cursor for truncated text */
+}
+
+/* Show tooltip on hover for truncated text */
+#auto-session-detail-card .detail-value[title]:hover {
+  cursor: help;
+}
+
+/* Style for editable input fields in auto-detected session - ALL WHITE BACKGROUNDS */
+#auto-session-detail-card .detail-value input,
+#auto-session-detail-card .detail-value textarea,
+#auto-session-detail-card .detail-value select,
+.editable-input {
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 14px;
+  width: 100%;
+  box-sizing: border-box;
+  background-color: #ffffff !important;
+  transition: all 0.2s ease;
+  color: #111827;
+  font-family: inherit;
+}
+
+#auto-session-detail-card .detail-value input:hover,
+#auto-session-detail-card .detail-value textarea:hover,
+#auto-session-detail-card .detail-value select:hover,
+.editable-input:hover {
+  border-color: #d1d5db;
+}
+
+#auto-session-detail-card .detail-value input:focus,
+#auto-session-detail-card .detail-value textarea:focus,
+#auto-session-detail-card .detail-value select:focus,
+.editable-input:focus {
+  outline: none;
+  border-color: #298997;
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 3px rgba(41, 137, 151, 0.1);
+}
+
+/* Nice date picker styling */
+.date-input,
+.datetime-input {
+  position: relative;
+  cursor: pointer;
+  padding-right: 40px !important;
+}
+
+.date-input::-webkit-calendar-picker-indicator,
+.datetime-input::-webkit-calendar-picker-indicator {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23298997' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'%3E%3Cpath d='M16 2v4M8 2v4M3 10h18'%3E%3C/svg%3E");
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+.date-input::-webkit-calendar-picker-indicator:hover,
+.datetime-input::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Firefox date picker styling */
+.date-input::-moz-calendar-picker-indicator,
+.datetime-input::-moz-calendar-picker-indicator {
+  opacity: 0.6;
+  cursor: pointer;
+  margin-right: 8px;
+}
+
+.date-input::-moz-calendar-picker-indicator:hover,
+.datetime-input::-moz-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* For edit mode, allow detail-value to expand */
+#auto-session-detail-card .editable-field .detail-value {
+  max-width: 100%;
+  overflow: visible;
+  text-overflow: initial;
+  white-space: normal;
+}
+
+/* Containers for confirmed results - use contents to flatten into grid */
+#auto-session-detail-card #auto-confirmed-results-container {
+  display: contents;
+}
+
+/* Manual fields container - full width with border before it */
+#auto-session-detail-card #auto-manual-fields-container {
+  grid-column: 1 / -1; /* Span full width */
+  border-top: 2px solid #e5e7eb;
+  padding-top: 20px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Individual session detail item - vertical layout (label on top) */
+.session-detail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 12px 0;
   border-bottom: none;
+  min-width: 0; /* Allow grid items to shrink */
+}
+
+/* Label on top - nicer styling */
+.session-detail-item .detail-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  line-height: 1.4;
+}
+
+/* Value below label - nicer styling */
+.session-detail-item .detail-value {
+  font-size: 14px;
+  color: #111827;
+  text-align: left;
+  width: 100%;
+  word-wrap: break-word;
+  line-height: 1.5;
+  min-height: 20px;
+}
+
+/* Empty values styling */
+.session-detail-item .detail-value:empty::before {
+  content: "-";
+  color: #9ca3af;
+  font-style: italic;
+}
+
+/* All fields inside manual fields container are already full width (container is full width) */
+
+/* Align checkboxes to the left (since label is on top now) */
+#auto-session-detail-card
+  .session-detail-item
+  .detail-value:has(input[type="checkbox"]) {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  padding-top: 2px;
+}
+
+#auto-session-detail-card
+  .session-detail-item
+  .detail-value
+  input[type="checkbox"] {
+  margin-left: 0;
+  margin-right: 0;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: #298997;
 }
 
 .detail-value-with-badge {
@@ -2194,6 +2408,36 @@ select.edit-input {
 
 .ai-notes-copy-icon:hover {
   background-color: #f0f0f0;
+}
+
+/* Small, subtle copy notification */
+.copy-notification {
+  position: absolute;
+  bottom: 8px;
+  right: 50px;
+  background-color: #10b981;
+  color: white;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 0.15s ease-out, transform 0.15s ease-out;
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.copy-notification.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Error state (when copy fails) */
+.copy-notification.error {
+  background-color: #ef4444;
 }
 
 /* Feedback Section */

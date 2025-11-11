@@ -1,5 +1,6 @@
-﻿// FAST CAPTURE - Popup Script
+// FAST CAPTURE - Popup Script
 // Handles captured data and creates HTML file quickly
+// Auto-detected session page support
 
 document.addEventListener("DOMContentLoaded", function () {
   console.log("🚀 Fast popup script loaded");
@@ -24,26 +25,50 @@ function checkLoginStatus() {
   });
 }
 
-function showLoginPage() {
-  document.getElementById("login-page").style.display = "block";
-  document.getElementById("main-page").style.display = "none";
-}
-
 function showMainPage() {
   document.getElementById("login-page").style.display = "none";
   document.getElementById("main-page").style.display = "block";
 
-  // Set Clients as default active page and navigate to it
-  setTimeout(() => {
-    const clientsMenuItem = document.querySelector(
-      '.menu-item[data-page="clients"]'
-    );
-    if (clientsMenuItem) {
-      clientsMenuItem.classList.add("active");
+  // Check for pending session data from auto-scraping
+  chrome.storage.local.get(
+    ["pendingSessionData", "sessionDataTimestamp"],
+    (result) => {
+      if (result.pendingSessionData && result.sessionDataTimestamp) {
+        // Check if data is recent (within 5 minutes)
+        const age = Date.now() - result.sessionDataTimestamp;
+        if (age < 5 * 60 * 1000) {
+          console.log("SessyNote: Found pending session data, auto-filling...");
+          // Auto-fill the session
+          setTimeout(() => {
+            autoFillSessionFromScrapedData(result.pendingSessionData);
+            // Clear the pending data
+            chrome.storage.local.remove([
+              "pendingSessionData",
+              "sessionDataTimestamp",
+            ]);
+          }, 500);
+          return;
+        }
+      }
+
+      // No pending data - show clients page as normal
+      setTimeout(() => {
+        const clientsMenuItem = document.querySelector(
+          '.menu-item[data-page="clients"]'
+        );
+        if (clientsMenuItem) {
+          clientsMenuItem.classList.add("active");
+        }
+        // Navigate directly to clients page
+        navigateToPage("clients");
+      }, 100);
     }
-    // Navigate directly to clients page
-    navigateToPage("clients");
-  }, 100);
+  );
+}
+
+function showLoginPage() {
+  document.getElementById("login-page").style.display = "block";
+  document.getElementById("main-page").style.display = "none";
 }
 
 // API Configuration - Your actual server URL
@@ -52,16 +77,16 @@ const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
 // Handle 401 Unauthorized errors (token expired)
 function handle401Error() {
   console.log("⚠️ Token expired or invalid - logging out user");
-  
+
   // Clear all auth data
   chrome.storage.local.remove(
     ["isLoggedIn", "userEmail", "accessToken", "pendingLogin"],
     function () {
       console.log("✅ User logged out due to expired token");
-      
+
       // Show login page
       showLoginPage();
-      
+
       // Show message to user
       showErrorMessage("Your session has expired. Please log in again.");
     }
@@ -430,10 +455,17 @@ async function handleSuccessfulLogin(accessToken, email) {
   });
 
   console.log("✅ User logged in successfully");
-  
+
   // Fetch and cache emr_url
   await fetchAndCacheEMRUrl(accessToken);
-  
+
+  // After login, trigger the scraping flow on the current page (if on EMR domain)
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, { action: "checkAndScrape" });
+    }
+  });
+
   showMainPage();
 }
 
@@ -470,13 +502,16 @@ async function fetchAndCacheEMRUrl(accessToken) {
     console.log("🔑 EMR Type ID:", emrTypeId);
 
     // Step 3: Fetch EMR type details
-    const emrTypeResponse = await fetch(`${API_BASE_URL}/emr-types/${emrTypeId}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-    });
+    const emrTypeResponse = await fetch(
+      `${API_BASE_URL}/emr-types/${emrTypeId}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
 
     if (!emrTypeResponse.ok) {
       console.error("❌ Failed to fetch EMR type:", emrTypeResponse.status);
@@ -486,14 +521,26 @@ async function fetchAndCacheEMRUrl(accessToken) {
     const emrTypeData = await emrTypeResponse.json();
     console.log("📋 EMR Type data:", emrTypeData);
 
-    // Step 4: Cache emr_url and emr_type_id
+    // Parse response field if it's a JSON string
+    let emrResponse = emrTypeData.response;
+    if (emrResponse && typeof emrResponse === "string") {
+      try {
+        emrResponse = JSON.parse(emrResponse);
+      } catch (e) {
+        console.error("❌ Failed to parse response field:", e);
+      }
+    }
+
+    // Step 4: Cache emr_url, emr_type_id, and response
     const emrUrl = emrTypeData.emr_url || "";
-    await chrome.storage.local.set({ 
+    await chrome.storage.local.set({
       emrUrl: emrUrl,
-      emrTypeId: emrTypeId 
+      emrTypeId: emrTypeId,
+      emrResponse: emrResponse || null,
     });
     console.log("✅ EMR URL cached:", emrUrl);
     console.log("✅ EMR Type ID cached:", emrTypeId);
+    console.log("✅ EMR Response cached:", emrResponse);
   } catch (error) {
     console.error("❌ Error fetching EMR URL:", error);
   }
@@ -542,6 +589,9 @@ function setupMainAppHandlers() {
 
   // Setup edit button event listeners
   setupEditButtonHandlers();
+
+  // Setup auto-detected session page handlers
+  setupAutoDetectedSessionHandlers();
 
   // Setup menu functionality
   setupMenuHandlers();
@@ -624,7 +674,9 @@ function setupEditButtonHandlers() {
   }
 
   // Personal Info edit button (bottom)
-  const editPersonalBottomBtn = document.getElementById("edit-personal-info-bottom-btn");
+  const editPersonalBottomBtn = document.getElementById(
+    "edit-personal-info-bottom-btn"
+  );
   if (editPersonalBottomBtn) {
     editPersonalBottomBtn.addEventListener("click", function () {
       console.log("✏️ Personal Info bottom edit button clicked");
@@ -660,13 +712,376 @@ function setupEditButtonHandlers() {
   }
 
   // Company Info edit button (bottom)
-  const editCompanyBottomBtn = document.getElementById("edit-company-info-bottom-btn");
+  const editCompanyBottomBtn = document.getElementById(
+    "edit-company-info-bottom-btn"
+  );
   if (editCompanyBottomBtn) {
     editCompanyBottomBtn.addEventListener("click", function () {
       console.log("✏️ Company Info bottom edit button clicked");
       editCompanyInfo();
     });
   }
+}
+
+function setupAutoDetectedSessionHandlers() {
+  const autoEditBtn = document.getElementById("auto-edit-button");
+
+  if (autoEditBtn) {
+    autoEditBtn.addEventListener("click", function () {
+      console.log("✏️ Auto-detected session Edit button clicked");
+      switchAutoDetectedSessionToEditMode();
+    });
+  }
+}
+
+async function switchAutoDetectedSessionToEditMode() {
+  console.log("🔄 Switching auto-detected session to edit mode...");
+
+  // Get dynamic fields data (should be stored globally)
+  if (!currentAutoDetectedDynamicFields || !currentAutoDetectedScrapedData) {
+    console.error("❌ No dynamic fields or scraped data found");
+    showErrorMessage("Unable to switch to edit mode. Please refresh the page.");
+    return;
+  }
+
+  const dynamicFields = currentAutoDetectedDynamicFields;
+  const scrapedData = currentAutoDetectedScrapedData;
+
+  // Convert static fields (Instructions only - Client and Type are NEVER editable)
+  const staticFields = [
+    {
+      containerId: "auto-instructions-container",
+      valueId: "auto-instructions",
+      fieldName: "Instructions",
+    },
+  ];
+
+  staticFields.forEach((field) => {
+    const container = document.getElementById(field.containerId);
+    const valueElement = document.getElementById(field.valueId);
+
+    if (container && valueElement) {
+      const currentValue = valueElement.textContent;
+
+      // Replace with input field
+      const label = container.querySelector(".detail-label");
+      const detailValue = container.querySelector(".detail-value");
+
+      if (label && detailValue) {
+        detailValue.innerHTML = `<input type="text" value="${currentValue}" data-field-name="${field.fieldName}" class="editable-input">`;
+      }
+    }
+  });
+
+  // Recreate confirmed results fields in edit mode with proper types from EMR type fields
+  const confirmedContainer = document.getElementById(
+    "auto-confirmed-results-container"
+  );
+  if (confirmedContainer) {
+    // First, collect current values from existing view fields before clearing
+    const existingValues = {};
+    const viewFields = confirmedContainer.querySelectorAll(
+      ".session-detail-item"
+    );
+    viewFields.forEach((fieldElement) => {
+      const label = fieldElement.querySelector(".detail-label");
+      const valueSpan = fieldElement.querySelector(".detail-value");
+      if (label && valueSpan) {
+        const labelText = label.textContent.trim();
+        // Check if it's a checkbox
+        const checkboxInput = valueSpan.querySelector('input[type="checkbox"]');
+        if (checkboxInput) {
+          existingValues[labelText] = checkboxInput.checked;
+        } else {
+          existingValues[labelText] = valueSpan.textContent.trim();
+        }
+      }
+    });
+
+    // Clear existing fields
+    confirmedContainer.innerHTML = "";
+
+    // Recreate all confirmed results fields in edit mode with correct types
+    dynamicFields.confirmedResults.forEach((result) => {
+      // Skip client field - it's already shown as static field
+      const keyLower = result.key ? result.key.toLowerCase().trim() : "";
+      if (keyLower === "client" || keyLower === "client name") {
+        return;
+      }
+
+      // Find field definition from EMR type fields
+      let fieldDef = dynamicFields.fields.find((f) => f.name === result.key);
+
+      // Try case-insensitive matching if exact match not found
+      if (!fieldDef) {
+        fieldDef = dynamicFields.fields.find((field) => {
+          if (!field.name) return false;
+          const normalizedFieldName = field.name
+            .toLowerCase()
+            .replace(/-/g, " ")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          const normalizedResultKey = result.key
+            .toLowerCase()
+            .replace(/-/g, " ")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          return normalizedFieldName === normalizedResultKey;
+        });
+      }
+
+      if (fieldDef) {
+        // Get the api_name to look up value in scraped data
+        const fieldMapping = dynamicFields.fieldMapping;
+        let apiName = fieldMapping[result.key];
+
+        if (!apiName && fieldDef) {
+          apiName = fieldDef.api_name;
+        }
+
+        // Get current value: prefer existing view value, then scraped data, then empty
+        let fieldValue = "";
+        if (existingValues.hasOwnProperty(result.key)) {
+          fieldValue = existingValues[result.key];
+        } else if (apiName && scrapedData.hasOwnProperty(apiName)) {
+          fieldValue = scrapedData[apiName];
+        }
+
+        // Create editable field element with correct type from EMR type field
+        const fieldElement = createEditableFieldElement(
+          result.key, // Display name
+          fieldValue !== null && fieldValue !== undefined ? fieldValue : "",
+          fieldDef.type, // Use type from EMR type field
+          fieldDef.dropdown_values || null // Pass dropdown values if available
+        );
+
+        // Store api_name in data attribute for saving
+        const inputElement = fieldElement.querySelector(
+          "input, textarea, select"
+        );
+        if (inputElement && apiName) {
+          inputElement.setAttribute("data-api-name", apiName);
+        }
+
+        confirmedContainer.appendChild(fieldElement);
+      } else {
+        console.log(`❌ No field definition found for key '${result.key}'`);
+      }
+    });
+  }
+
+  // Manual fields are already in edit mode, but ensure they have correct types
+  const manualContainer = document.getElementById(
+    "auto-manual-fields-container"
+  );
+  if (manualContainer) {
+    // Manual fields should already be in edit mode, but we can verify types are correct
+    // They're created with createEditableFieldElement which uses correct types
+  }
+
+  // Change Edit button to Save button
+  const autoEditBtn = document.getElementById("auto-edit-button");
+  if (autoEditBtn) {
+    autoEditBtn.textContent = "Save";
+    // Remove any existing event listeners by cloning the button
+    const newBtn = autoEditBtn.cloneNode(true);
+    autoEditBtn.parentNode.replaceChild(newBtn, autoEditBtn);
+    // Add the event listener to the new button
+    newBtn.addEventListener("click", function () {
+      console.log("💾 Save button clicked");
+      saveAutoDetectedSession();
+    });
+  }
+
+  console.log(
+    "✅ Auto-detected session switched to edit mode with proper field types"
+  );
+}
+
+function saveAutoDetectedSession() {
+  console.log("💾 Saving changes and switching back to view mode...");
+
+  if (!currentAutoDetectedDynamicFields || !currentAutoDetectedScrapedData) {
+    console.error("❌ No dynamic fields or scraped data found");
+    showErrorMessage("Unable to save. Please refresh the page.");
+    return;
+  }
+
+  const dynamicFields = currentAutoDetectedDynamicFields;
+  const scrapedData = currentAutoDetectedScrapedData;
+
+  // Collect updated Instructions value
+  const instructionsInput = document.querySelector(
+    '#auto-instructions-container input[data-field-name="Instructions"]'
+  );
+  if (instructionsInput) {
+    const newInstructions = instructionsInput.value;
+    scrapedData.Instructions = newInstructions;
+    scrapedData.instructions = newInstructions;
+
+    // Update Instructions display with tooltip
+    const instructionsEl = document.getElementById("auto-instructions");
+    if (instructionsEl) {
+      instructionsEl.textContent = newInstructions;
+      instructionsEl.title = newInstructions; // Tooltip for full text
+    }
+  }
+
+  // Collect all edited values from confirmed results fields
+  const confirmedContainer = document.getElementById(
+    "auto-confirmed-results-container"
+  );
+  if (confirmedContainer) {
+    const editedFields = confirmedContainer.querySelectorAll(
+      ".session-detail-item"
+    );
+
+    editedFields.forEach((fieldElement) => {
+      const label = fieldElement.querySelector(".detail-label");
+      const valueSpan = fieldElement.querySelector(".detail-value");
+      const input = valueSpan
+        ? valueSpan.querySelector("input, textarea, select")
+        : null;
+
+      if (label && input) {
+        const fieldName = label.textContent.trim();
+        const apiName = input.getAttribute("data-api-name");
+
+        if (apiName) {
+          let newValue = "";
+          if (input.type === "checkbox") {
+            newValue = input.checked;
+          } else if (input.tagName === "SELECT") {
+            newValue = input.value;
+          } else {
+            newValue = input.value || "";
+          }
+
+          // Update scrapedData with new value
+          scrapedData[apiName] = newValue;
+          console.log(`💾 Updated ${apiName} = ${newValue}`);
+        }
+      }
+    });
+
+    // Clear and recreate confirmed results fields in view mode with truncation
+    confirmedContainer.innerHTML = "";
+
+    dynamicFields.confirmedResults.forEach((result) => {
+      // Skip client field
+      const keyLower = result.key ? result.key.toLowerCase().trim() : "";
+      if (keyLower === "client" || keyLower === "client name") {
+        return;
+      }
+
+      // Find field definition
+      let fieldDef = dynamicFields.fields.find((f) => f.name === result.key);
+      if (!fieldDef) {
+        fieldDef = dynamicFields.fields.find((field) => {
+          if (!field.name) return false;
+          const normalizedFieldName = field.name
+            .toLowerCase()
+            .replace(/-/g, " ")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          const normalizedResultKey = result.key
+            .toLowerCase()
+            .replace(/-/g, " ")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          return normalizedFieldName === normalizedResultKey;
+        });
+      }
+
+      if (fieldDef) {
+        // Get the api_name to look up value in updated scrapedData
+        const fieldMapping = dynamicFields.fieldMapping;
+        let apiName = fieldMapping[result.key];
+        if (!apiName && fieldDef) {
+          apiName = fieldDef.api_name;
+        }
+
+        // Get value from updated scrapedData
+        const fieldValue =
+          apiName && scrapedData.hasOwnProperty(apiName)
+            ? scrapedData[apiName]
+            : "";
+
+        // Create view mode field with truncation
+        const fieldElement = createDynamicFieldElement(
+          result.key,
+          fieldValue !== null && fieldValue !== undefined ? fieldValue : "",
+          fieldDef.type
+        );
+        confirmedContainer.appendChild(fieldElement);
+      }
+    });
+  }
+
+  // Collect all edited values from manual fields and update scrapedData
+  const manualContainer = document.getElementById(
+    "auto-manual-fields-container"
+  );
+  if (manualContainer) {
+    const manualFields = manualContainer.querySelectorAll(
+      ".session-detail-item"
+    );
+
+    manualFields.forEach((fieldElement) => {
+      const label = fieldElement.querySelector(".detail-label");
+      const input = fieldElement.querySelector("input, textarea, select");
+
+      if (label && input) {
+        const fieldName = label.textContent.trim();
+        const apiName = input.getAttribute("data-api-name");
+
+        if (apiName) {
+          let newValue = "";
+          if (input.type === "checkbox") {
+            newValue = input.checked;
+          } else if (input.tagName === "SELECT") {
+            newValue = input.value;
+          } else {
+            newValue = input.value || "";
+          }
+
+          // Update scrapedData with new value
+          scrapedData[apiName] = newValue;
+          console.log(`💾 Updated manual field ${apiName} = ${newValue}`);
+        } else {
+          // For Modality and Modality Steps, use field name as key
+          if (fieldName === "Modality") {
+            scrapedData.modality = input.value || "";
+          } else if (fieldName === "Modality Steps") {
+            scrapedData.modality_steps = input.value || "";
+          }
+        }
+      }
+    });
+  }
+
+  // Update global scrapedData
+  currentAutoDetectedScrapedData = scrapedData;
+
+  // Change Save button back to Edit button
+  const autoEditBtn = document.getElementById("auto-edit-button");
+  if (autoEditBtn) {
+    autoEditBtn.textContent = "Edit";
+    // Remove any existing event listeners by cloning the button
+    const newBtn = autoEditBtn.cloneNode(true);
+    autoEditBtn.parentNode.replaceChild(newBtn, autoEditBtn);
+    // Add the event listener to the new button
+    newBtn.addEventListener("click", function () {
+      console.log("✏️ Auto-detected session Edit button clicked");
+      switchAutoDetectedSessionToEditMode();
+    });
+  }
+
+  console.log("✅ Changes saved, switched back to view mode with truncation");
 }
 
 function setupMenuHandlers() {
@@ -683,7 +1098,7 @@ function setupMenuHandlers() {
   if (toggleSidePanelBtn) {
     toggleSidePanelBtn.addEventListener("click", function () {
       console.log("🔄 Toggle side panel button clicked");
-      window.close();
+      chrome.runtime.sendMessage({ action: "closeSidePanel" });
     });
   }
 
@@ -691,7 +1106,7 @@ function setupMenuHandlers() {
   if (floatingToggleBtn) {
     floatingToggleBtn.addEventListener("click", function () {
       console.log("🔄 Floating toggle button clicked");
-      window.close();
+      chrome.runtime.sendMessage({ action: "closeSidePanel" });
     });
   }
 
@@ -723,6 +1138,22 @@ function setupMenuHandlers() {
     menuOverlay.classList.remove("show");
   }
 
+  // Close menu when clicking anywhere outside the menu
+  document.addEventListener("click", function (event) {
+    const isOpen = sideMenu.classList.contains("open");
+
+    // Only check if menu is open
+    if (!isOpen) return;
+
+    // Check if click is outside both the menu and the toggle button
+    const clickedInsideMenu = sideMenu.contains(event.target);
+    const clickedMenuToggle = menuToggle.contains(event.target);
+
+    if (!clickedInsideMenu && !clickedMenuToggle) {
+      closeMenu();
+    }
+  });
+
   // Navigation functionality
   menuItems.forEach((item) => {
     item.addEventListener("click", function () {
@@ -742,9 +1173,19 @@ function setupMenuHandlers() {
   if (signOutBtn) {
     signOutBtn.addEventListener("click", function () {
       chrome.storage.local.remove(
-        ["isLoggedIn", "userEmail", "accessToken", "pendingLogin"],
+        [
+          "isLoggedIn",
+          "userEmail",
+          "accessToken",
+          "pendingLogin",
+          "emrUrl",
+          "emrTypeId",
+          "emrResponse",
+          "pendingSessionData",
+          "sessionDataTimestamp",
+        ],
         function () {
-          console.log("✅ User logged out successfully");
+          console.log("✅ User logged out successfully - all data cleared");
           showLoginPage();
         }
       );
@@ -804,7 +1245,9 @@ function setupClientsPageHandlers() {
   // Profile tab functionality
   const profilePersonalTab = document.getElementById("profile-personal-tab");
   const profileEmrTab = document.getElementById("profile-emr-tab");
-  const profilePersonalContent = document.getElementById("profile-personal-tab-content");
+  const profilePersonalContent = document.getElementById(
+    "profile-personal-tab-content"
+  );
   const profileEmrContent = document.getElementById("profile-emr-tab-content");
 
   if (profilePersonalTab && profileEmrTab) {
@@ -856,7 +1299,9 @@ function setupClientsPageHandlers() {
 
       // IMPORTANT: Clear sessions list when switching away from Sessions tab
       clearSessionsList();
-      console.log("✅ Switched to Client Info tab - sessions cleared and hidden");
+      console.log(
+        "✅ Switched to Client Info tab - sessions cleared and hidden"
+      );
 
       // Show Client History card in Client Info tab
       const clientHistoryCard = document.getElementById("client-history-card");
@@ -879,7 +1324,9 @@ function setupClientsPageHandlers() {
       }
 
       // Show add session button when in Sessions tab
-      const addSessionBtnContainer = document.getElementById("add-session-btn-container");
+      const addSessionBtnContainer = document.getElementById(
+        "add-session-btn-container"
+      );
       if (addSessionBtnContainer) {
         addSessionBtnContainer.style.display = "block";
       }
@@ -894,7 +1341,9 @@ function setupClientsPageHandlers() {
   if (clientInfoTab) {
     clientInfoTab.addEventListener("click", function () {
       // Hide add session button when not in Sessions tab
-      const addSessionBtnContainer = document.getElementById("add-session-btn-container");
+      const addSessionBtnContainer = document.getElementById(
+        "add-session-btn-container"
+      );
       if (addSessionBtnContainer) {
         addSessionBtnContainer.style.display = "none";
       }
@@ -951,12 +1400,13 @@ function setupClientsPageHandlers() {
   );
 
   if (editButton) {
-    editButton.addEventListener("click", function () {
+    editButton.addEventListener("click", async function () {
       console.log("✏️ Edit button clicked");
-      // Get the current session data and open edit modal
-      chrome.storage.local.get(["currentSession"], function (result) {
-        if (result.currentSession) {
-          showEditSessionModal(result.currentSession);
+      // Get the current session ID and fetch fresh data from API
+      chrome.storage.local.get(["currentSession"], async function (result) {
+        if (result.currentSession && result.currentSession.id) {
+          // Always fetch fresh session data from API instead of using cached data
+          await editSession(result.currentSession.id);
         } else {
           showErrorMessage(
             "No session data found. Please view the session first."
@@ -985,12 +1435,13 @@ function setupClientsPageHandlers() {
         .writeText(text)
         .then(() => {
           console.log("📋 Text copied to clipboard:", text);
-          // TODO: Show success message
-          alert("Text copied to clipboard!");
+          // Show small, subtle copy notification
+          showCopyNotification(icon);
         })
         .catch((err) => {
           console.error("Failed to copy text: ", err);
-          alert("Failed to copy text");
+          // Show small error notification
+          showCopyNotification(icon, false);
         });
     });
   });
@@ -1446,26 +1897,26 @@ function navigateToPage(page) {
     // Clear the sessions list from DOM
     clearSessionsList();
     console.log("✅ Cleared sessions list when navigating to:", page);
-    
+
     // Reset client-detail tabs to default state
     const clientInfoTab = document.getElementById("client-info-tab");
     const sessionsTab = document.getElementById("sessions-tab");
     const clientInfoContent = document.getElementById("client-info-content");
     const sessionsContent = document.getElementById("sessions-content");
-    
+
     if (clientInfoTab && sessionsTab && clientInfoContent && sessionsContent) {
       // Reset to Client Info tab
       clientInfoTab.classList.add("active");
       sessionsTab.classList.remove("active");
       clientInfoContent.classList.add("active");
       sessionsContent.classList.remove("active");
-      
+
       // Show Client History card when resetting to Client Info tab
       const clientHistoryCard = document.getElementById("client-history-card");
       if (clientHistoryCard) {
         clientHistoryCard.style.display = "block";
       }
-      
+
       console.log("✅ Reset client-detail tabs to default (Client Info)");
     }
   }
@@ -1489,14 +1940,18 @@ function navigateToPage(page) {
     loadSessionAINotes();
   } else if (page === "emr-types") {
     loadDocumentationMethods();
+  } else if (page === "auto-detected-session") {
+    // Auto-detected session page loaded by populateAutoDetectedSessionPage()
   }
 
   console.log(`📄 Navigated to ${page} page`);
 }
 
 async function loadDocumentationMethods() {
-  const documentationMethodSelect = document.getElementById("documentation-method");
-  
+  const documentationMethodSelect = document.getElementById(
+    "documentation-method"
+  );
+
   if (!documentationMethodSelect) {
     console.error("❌ Documentation method select element not found");
     return;
@@ -1525,17 +1980,20 @@ async function loadDocumentationMethods() {
     }
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch documentation methods: ${response.status}`);
+      throw new Error(
+        `Failed to fetch documentation methods: ${response.status}`
+      );
     }
 
     const methods = await response.json();
     console.log("📋 Documentation methods fetched:", methods);
 
     // Clear existing options (except the first placeholder)
-    documentationMethodSelect.innerHTML = '<option value="">Select Documentation Method</option>';
+    documentationMethodSelect.innerHTML =
+      '<option value="">Select Documentation Method</option>';
 
     // Add each documentation method as an option
-    methods.forEach(method => {
+    methods.forEach((method) => {
       const option = document.createElement("option");
       option.value = method.id;
       option.textContent = method.name;
@@ -2045,11 +2503,11 @@ function updateSessionButtons(tabType) {
       // Session Info tab buttons
       editButton.textContent = "Edit";
       editButton.style.display = "block";
-      generateButton.textContent = "Generate AI Notes";
+      // Button text will be set by checkAndUpdateAIButtonState()
     } else if (tabType === "ai-notes") {
       // AI Notes tab buttons - hide edit button
       editButton.style.display = "none";
-      generateButton.textContent = "Re-generate";
+      // Keep the same button text as Session Info tab - don't change it
     }
 
     console.log(`✅ Updated buttons for ${tabType} tab`);
@@ -2622,7 +3080,9 @@ function renderDynamicFields(dynamicFields) {
           );
           const fieldElement = createDynamicFieldElement(
             fieldDef.name, // Use the display name from emr-types-fields
-            session[sessionKey] || "", // Use value from session or empty string if null/empty
+            session[sessionKey] !== null && session[sessionKey] !== undefined
+              ? session[sessionKey]
+              : "", // Preserve false/0 values for booleans
             fieldDef.type
           );
           dynamicFieldsSection.appendChild(fieldElement);
@@ -2675,7 +3135,9 @@ function renderDynamicFields(dynamicFields) {
           );
           const fieldElement = createDynamicFieldElement(
             fieldDef.name, // Use the display name from emr-types-fields
-            session[sessionKey] || "", // Use value from session or empty string if null/empty
+            session[sessionKey] !== null && session[sessionKey] !== undefined
+              ? session[sessionKey]
+              : "", // Preserve false/0 values for booleans
             fieldDef.type
           );
           dynamicFieldsSection.appendChild(fieldElement);
@@ -2715,11 +3177,14 @@ function createDynamicFieldElement(fieldName, fieldValue, fieldType) {
     }
   } else if (fieldType === "boolean") {
     // Display checkbox for boolean fields (read-only)
+    // Handle various truthy values from database: true, "true", "True", 1, "1"
     const isChecked =
       fieldValue === true ||
       fieldValue === "true" ||
+      fieldValue === "True" ||
       fieldValue === 1 ||
-      fieldValue === "1";
+      fieldValue === "1" ||
+      (typeof fieldValue === "string" && fieldValue.toLowerCase() === "true");
     fieldElement.innerHTML = `
       <span class="detail-label">${formattedName}</span>
       <span class="detail-value">
@@ -2731,9 +3196,16 @@ function createDynamicFieldElement(fieldName, fieldValue, fieldType) {
     return fieldElement;
   }
 
+  // Add title attribute for tooltip if value exists and might be truncated
+  // Escape HTML entities in title to prevent issues
+  const escapedValue = formattedValue
+    ? formattedValue.replace(/"/g, "&quot;").replace(/'/g, "&#39;")
+    : "";
+  const titleAttr = escapedValue ? `title="${escapedValue}"` : "";
+
   fieldElement.innerHTML = `
     <span class="detail-label">${formattedName}</span>
-    <span class="detail-value">${formattedValue || ""}</span>
+    <span class="detail-value" ${titleAttr}>${formattedValue || ""}</span>
   `;
 
   return fieldElement;
@@ -3103,7 +3575,9 @@ function editPersonalInfo() {
   }
 
   // Hide bottom edit button
-  const bottomEditBtn = document.getElementById("edit-personal-info-bottom-btn");
+  const bottomEditBtn = document.getElementById(
+    "edit-personal-info-bottom-btn"
+  );
   if (bottomEditBtn) {
     bottomEditBtn.style.display = "none";
   }
@@ -4668,7 +5142,7 @@ async function saveEMRInfo() {
     }
 
     showSuccessMessage("EMR Info saved successfully!");
-    
+
     // Re-fetch and update EMR URL cache after saving
     await fetchAndCacheEMRUrl(tokenResult.accessToken);
     console.log("✅ EMR URL cache updated after save");
@@ -4845,7 +5319,9 @@ async function savePersonalInfo() {
     updateProfilePage(updatedData, window.profileAdditionalData);
 
     // Show bottom edit button again
-    const personalBottomBtn = document.getElementById("edit-personal-info-bottom-btn");
+    const personalBottomBtn = document.getElementById(
+      "edit-personal-info-bottom-btn"
+    );
     if (personalBottomBtn) {
       personalBottomBtn.style.display = "flex";
     }
@@ -4946,7 +5422,9 @@ function cancelEditPersonalInfo() {
   updateProfilePage(window.currentProfileData, window.profileAdditionalData);
 
   // Show bottom edit button again
-  const personalBottomBtn = document.getElementById("edit-personal-info-bottom-btn");
+  const personalBottomBtn = document.getElementById(
+    "edit-personal-info-bottom-btn"
+  );
   if (personalBottomBtn) {
     personalBottomBtn.style.display = "flex";
   }
@@ -5245,7 +5723,9 @@ async function saveCompanyInfo() {
     updateProfilePage(window.currentProfileData, window.profileAdditionalData);
 
     // Show bottom edit button again
-    const companyBottomBtn = document.getElementById("edit-company-info-bottom-btn");
+    const companyBottomBtn = document.getElementById(
+      "edit-company-info-bottom-btn"
+    );
     if (companyBottomBtn) {
       companyBottomBtn.style.display = "flex";
     }
@@ -5326,7 +5806,9 @@ function cancelEditCompanyInfo() {
   updateProfilePage(window.currentProfileData, window.profileAdditionalData);
 
   // Show bottom edit button again
-  const companyBottomBtn = document.getElementById("edit-company-info-bottom-btn");
+  const companyBottomBtn = document.getElementById(
+    "edit-company-info-bottom-btn"
+  );
   if (companyBottomBtn) {
     companyBottomBtn.style.display = "flex";
   }
@@ -5678,9 +6160,12 @@ async function showAddSessionModal() {
   }
 
   // Clear dynamic fields container
-  const container = document.getElementById("add-session-dynamic-fields-container");
+  const container = document.getElementById(
+    "add-session-dynamic-fields-container"
+  );
   if (container) {
-    container.innerHTML = '<p style="color: #666; text-align: center;">Select an EMR Type to load fields</p>';
+    container.innerHTML =
+      '<p style="color: #666; text-align: center;">Select an EMR Type to load fields</p>';
   }
 
   modal.style.display = "block";
@@ -5692,16 +6177,19 @@ async function showAddSessionModal() {
   // Setup EMR type change handler to load dynamic fields
   const emrTypeSelect = document.getElementById("new-session-emr-type");
   if (emrTypeSelect) {
-    emrTypeSelect.addEventListener("change", async function() {
+    emrTypeSelect.addEventListener("change", async function () {
       const emrTypeId = this.value;
       if (emrTypeId) {
         console.log("🔑 EMR Type selected:", emrTypeId);
         await loadAddSessionDynamicFields(emrTypeId);
       } else {
         // Clear fields if no EMR type selected
-        const container = document.getElementById("add-session-dynamic-fields-container");
+        const container = document.getElementById(
+          "add-session-dynamic-fields-container"
+        );
         if (container) {
-          container.innerHTML = '<p style="color: #666; text-align: center;">Select an EMR Type to load fields</p>';
+          container.innerHTML =
+            '<p style="color: #666; text-align: center;">Select an EMR Type to load fields</p>';
         }
       }
     });
@@ -5752,10 +6240,12 @@ async function loadClientsForSessionModal() {
     clientSelect.innerHTML = '<option value="">Select Client</option>';
 
     // Add clients to dropdown
-    clients.forEach(client => {
+    clients.forEach((client) => {
       const option = document.createElement("option");
       option.value = client.id || client.client_id;
-      option.textContent = `${client.first_name || ""} ${client.last_name || ""}`.trim() || "Unknown Client";
+      option.textContent =
+        `${client.first_name || ""} ${client.last_name || ""}`.trim() ||
+        "Unknown Client";
       clientSelect.appendChild(option);
     });
   } catch (error) {
@@ -5798,7 +6288,7 @@ async function loadEMRTypesForSessionModal() {
     emrTypeSelect.innerHTML = '<option value="">Select EMR Type</option>';
 
     // Add EMR types to dropdown
-    emrTypes.forEach(emrType => {
+    emrTypes.forEach((emrType) => {
       const option = document.createElement("option");
       option.value = emrType.id;
       option.textContent = emrType.name || "Unknown Type";
@@ -5811,7 +6301,9 @@ async function loadEMRTypesForSessionModal() {
 }
 
 async function loadAddSessionDynamicFields(emrTypeId) {
-  const container = document.getElementById("add-session-dynamic-fields-container");
+  const container = document.getElementById(
+    "add-session-dynamic-fields-container"
+  );
   if (!container) return;
 
   // Clear existing dynamic fields
@@ -5836,6 +6328,16 @@ async function loadAddSessionDynamicFields(emrTypeId) {
 
     // Create EMPTY form fields for each dynamic field (for creating new session)
     dynamicFields.confirmedResults.forEach((result) => {
+      // Skip "client" or "client name" field as it's already shown as a static field at the top
+      const keyLower = result.key ? result.key.toLowerCase().trim() : "";
+      if (keyLower === "client" || keyLower === "client name") {
+        console.log(
+          "⏭️ Skipping client field - already shown as static field:",
+          result.key
+        );
+        return;
+      }
+
       // Get the field type from EMR type fields
       let emrField = dynamicFields.fields.find(
         (field) => field.name === result.key
@@ -5847,13 +6349,15 @@ async function loadAddSessionDynamicFields(emrTypeId) {
           if (!field.name) return false;
           const normalizedFieldName = field.name
             .toLowerCase()
-            .replace(/-/g, "")
-            .replace(/\s+/g, " ")
+            .replace(/-/g, " ") // Replace hyphens with spaces
+            .replace(/_/g, " ") // Replace underscores with spaces
+            .replace(/\s+/g, " ") // Normalize multiple spaces to single space
             .trim();
           const normalizedResultKey = result.key
             .toLowerCase()
-            .replace(/-/g, "")
-            .replace(/\s+/g, " ")
+            .replace(/-/g, " ") // Replace hyphens with spaces
+            .replace(/_/g, " ") // Replace underscores with spaces
+            .replace(/\s+/g, " ") // Normalize multiple spaces to single space
             .trim();
           return normalizedFieldName === normalizedResultKey;
         });
@@ -5944,8 +6448,231 @@ async function loadAddSessionDynamicFields(emrTypeId) {
 
 async function saveNewSession() {
   console.log("🚀 Saving new session...");
-  // This will be implemented when you provide the API details
-  showErrorMessage("Session creation API not yet implemented");
+
+  try {
+    // Get form values
+    const clientSelect = document.getElementById("new-session-client");
+    const emrTypeSelect = document.getElementById("new-session-emr-type");
+    const instructionsTextarea = document.getElementById(
+      "new-session-instructions"
+    );
+
+    if (!clientSelect || !emrTypeSelect) {
+      showErrorMessage("Please fill in all required fields");
+      return;
+    }
+
+    const clientId = clientSelect.value;
+    const emrTypeId = emrTypeSelect.value;
+    const manualInstructions = instructionsTextarea
+      ? instructionsTextarea.value.trim()
+      : "";
+
+    if (!clientId || !emrTypeId) {
+      showErrorMessage("Please select both Client and EMR Type");
+      return;
+    }
+
+    // Get access token
+    const tokenResult = await chrome.storage.local.get(["accessToken"]);
+    if (!tokenResult.accessToken) {
+      showErrorMessage("Please log in again");
+      return;
+    }
+
+    // Get dynamic fields data to know field types
+    const dynamicFields = await getSessionDetailFields(emrTypeId);
+
+    // Build request body
+    const requestBody = {
+      emr_type_id: emrTypeId,
+      client_id: clientId,
+      manual_instructions: manualInstructions || "",
+    };
+
+    // Collect dynamic field values from the form
+    const dynamicFieldsContainer = document.getElementById(
+      "add-session-dynamic-fields-container"
+    );
+    if (dynamicFieldsContainer) {
+      const formGroups = dynamicFieldsContainer.querySelectorAll(".form-group");
+
+      formGroups.forEach((formGroup) => {
+        const input = formGroup.querySelector("input, textarea, select");
+        if (!input || !input.name) return;
+
+        const fieldName = input.name;
+        let fieldValue = "";
+        let fieldType = "text";
+
+        // Find the field type from dynamicFields
+        const emrField = dynamicFields.fields.find(
+          (f) => f.api_name === fieldName
+        );
+        if (emrField) {
+          fieldType = emrField.type;
+        } else {
+          // Try to infer from input type
+          if (input.type === "date") fieldType = "date";
+          else if (input.type === "datetime-local") fieldType = "datetime";
+          else if (input.type === "checkbox") fieldType = "boolean";
+          else if (input.tagName === "SELECT") fieldType = "dropdown";
+          else if (input.tagName === "TEXTAREA") fieldType = "textarea";
+        }
+
+        // Get value based on input type
+        if (input.type === "checkbox") {
+          fieldValue = input.checked;
+        } else {
+          fieldValue = input.value.trim();
+        }
+
+        // Format value according to type
+        if (fieldType === "date") {
+          requestBody[fieldName] = fieldValue ? fieldValue : null;
+        } else if (fieldType === "datetime") {
+          if (fieldValue) {
+            // Convert datetime-local format (YYYY-MM-DDTHH:mm) to YYYY-MM-DD HH:mm:ss
+            const date = new Date(fieldValue);
+            if (!isNaN(date.getTime())) {
+              const year = date.getFullYear();
+              const month = String(date.getMonth() + 1).padStart(2, "0");
+              const day = String(date.getDate()).padStart(2, "0");
+              const hours = String(date.getHours()).padStart(2, "0");
+              const minutes = String(date.getMinutes()).padStart(2, "0");
+              const seconds = String(date.getSeconds()).padStart(2, "0");
+              requestBody[
+                fieldName
+              ] = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+            } else {
+              requestBody[fieldName] = null;
+            }
+          } else {
+            requestBody[fieldName] = null;
+          }
+        } else if (fieldType === "boolean") {
+          requestBody[fieldName] = fieldValue ? "true" : "false";
+        } else {
+          // text, textarea, dropdown, number, email, tel - empty string if empty
+          requestBody[fieldName] = fieldValue || "";
+        }
+      });
+    }
+
+    console.log("📤 Request body:", requestBody);
+
+    // Disable button and show loading state
+    const saveBtn = document.getElementById("save-add-session");
+    if (saveBtn) {
+      saveBtn.disabled = true;
+      saveBtn.textContent = "Creating...";
+    }
+
+    // Make API POST request
+    const response = await fetch(`${API_BASE_URL}/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    // Check for 401 Unauthorized (token expired)
+    if (response.status === 401) {
+      handle401Error();
+      if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Create Session";
+      }
+      return;
+    }
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.message || `Failed to create session: ${response.status}`
+      );
+    }
+
+    const sessionData = await response.json();
+    console.log("✅ Session created successfully:", sessionData);
+
+    // Show success message
+    showSuccessMessage("Session created successfully!");
+
+    // Close modal
+    hideAddSessionModal();
+
+    // Refresh sessions list if on client detail page
+    const currentPage = document.querySelector(
+      ".page-content[style*='display: block'], .page-content:not([style*='display: none'])"
+    );
+    if (currentPage && currentPage.id === "client-detail-page") {
+      // Get current client ID and reload sessions
+      chrome.storage.local.get(["currentClient"], async (result) => {
+        if (result.currentClient && result.currentClient.clientId) {
+          const clientId = result.currentClient.clientId;
+
+          // Check if sessions tab is active
+          const sessionsTab = document.getElementById("sessions-tab");
+          const sessionsContent = document.getElementById("sessions-content");
+          const isSessionsTabActive =
+            sessionsTab && sessionsTab.classList.contains("active");
+
+          if (isSessionsTabActive) {
+            // Reload sessions directly from API (bypasses cache)
+            console.log("🔄 Reloading sessions after creating new session...");
+
+            // Fetch fresh sessions from API
+            const sessionsResponse = await fetch(
+              `${API_BASE_URL}/sessions?client_id=${clientId}`,
+              {
+                method: "GET",
+                headers: {
+                  Authorization: `Bearer ${tokenResult.accessToken}`,
+                  "Content-Type": "application/json",
+                },
+              }
+            );
+
+            if (sessionsResponse.ok) {
+              const updatedSessions = await sessionsResponse.json();
+
+              // Update cache
+              chrome.storage.local.get(["sessionsCache"], (cacheResult) => {
+                const sessionsCache = cacheResult.sessionsCache || {};
+                sessionsCache[clientId] = updatedSessions;
+                chrome.storage.local.set({ sessionsCache });
+              });
+
+              // Render the updated sessions list
+              await renderSessionsList(updatedSessions);
+              updateClientDetailSessionCount(updatedSessions.length);
+            } else {
+              // Fallback to loadSessionsFromAPI if fetch fails
+              await loadSessionsFromAPI(clientId);
+            }
+          } else {
+            // If not on sessions tab, just update the session count
+            updateSessionCountForClientInfo();
+          }
+        }
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error creating session:", error);
+    showErrorMessage(
+      error.message || "Failed to create session. Please try again."
+    );
+
+    // Re-enable button
+    const saveBtn = document.getElementById("save-add-session");
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "Create Session";
+    }
+  }
 }
 
 function hideEditSessionModal() {
@@ -5981,9 +6708,14 @@ async function saveEditSession() {
       "#dynamic-fields-container .form-group"
     );
     dynamicFields.forEach((field) => {
-      const input = field.querySelector("input, textarea");
+      const input = field.querySelector("input, textarea, select");
       if (input && input.name) {
-        sessionData[input.name] = input.value || "";
+        // Handle checkbox fields differently
+        if (input.type === "checkbox") {
+          sessionData[input.name] = input.checked ? "true" : "false";
+        } else {
+          sessionData[input.name] = input.value || "";
+        }
       }
     });
 
@@ -6015,7 +6747,8 @@ async function saveEditSession() {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    console.log("✅ Session updated successfully");
+    const updatedSession = await response.json();
+    console.log("✅ Session updated successfully", updatedSession);
 
     // Hide modal and refresh data
     hideEditSessionModal();
@@ -6026,11 +6759,54 @@ async function saveEditSession() {
       currentSession.currentSession &&
       currentSession.currentSession.id === sessionId
     ) {
-      // Refresh the session detail page
-      const updatedSession = await response.json();
-      chrome.storage.local.set({ currentSession: updatedSession });
-      updateSessionDetailPage(updatedSession, null);
+      // Fetch the COMPLETE session data from API (including all dynamic fields)
+      console.log("🔄 Fetching complete session data from API...");
+      const fullSessionResponse = await fetch(
+        `${API_BASE_URL}/sessions/${sessionId}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${tokenResult.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (fullSessionResponse.ok) {
+        const fullSession = await fullSessionResponse.json();
+        console.log("✅ Full session data fetched:", fullSession);
+        console.log("📋 Session keys:", Object.keys(fullSession));
+
+        // Update the stored session with COMPLETE data from server
+        chrome.storage.local.set({ currentSession: fullSession }, () => {
+          console.log("✅ Complete session stored successfully");
+
+          // Re-fetch dynamic fields to show updated checkbox values in view mode
+          if (fullSession.emr_type_id) {
+            console.log(
+              "🔄 Fetching dynamic fields for emr_type_id:",
+              fullSession.emr_type_id
+            );
+            getSessionDetailFields(fullSession.emr_type_id)
+              .then((dynamicFields) => {
+                console.log("✅ Dynamic fields fetched:", dynamicFields);
+                updateSessionDetailPage(fullSession, dynamicFields);
+              })
+              .catch((error) => {
+                console.error("❌ Error fetching dynamic fields:", error);
+              });
+          } else {
+            updateSessionDetailPage(fullSession, null);
+          }
+        });
+      } else {
+        console.error("❌ Failed to fetch full session data");
+      }
     }
+
+    // Clear the session fields cache to force refresh on next edit
+    const cacheKey = `session_fields_${updatedSession.emr_type_id}`;
+    chrome.storage.local.remove([cacheKey]);
 
     // Show success message
     showSuccessMessage("Session updated successfully!");
@@ -6931,6 +7707,46 @@ function showErrorMessage(message, duration = 4000) {
   }
 }
 
+// Small, subtle copy notification function
+function showCopyNotification(iconElement, success = true) {
+  // Remove any existing notification
+  const existingNotification =
+    iconElement.parentElement.querySelector(".copy-notification");
+  if (existingNotification) {
+    existingNotification.remove();
+  }
+
+  // Create small notification element
+  const notification = document.createElement("div");
+  notification.className = "copy-notification";
+  if (!success) {
+    notification.classList.add("error");
+  }
+  notification.textContent = success ? "Copied" : "Failed";
+
+  // Position it near the icon
+  const container = iconElement.parentElement;
+  container.style.position = "relative";
+
+  // Insert notification after the icon
+  iconElement.parentElement.appendChild(notification);
+
+  // Show notification
+  setTimeout(() => {
+    notification.classList.add("show");
+  }, 10);
+
+  // Hide and remove after 1.5 seconds
+  setTimeout(() => {
+    notification.classList.remove("show");
+    setTimeout(() => {
+      if (notification.parentElement) {
+        notification.remove();
+      }
+    }, 200);
+  }, 1500);
+}
+
 // Close menus when clicking outside
 document.addEventListener("click", function (event) {
   if (!event.target.closest(".client-menu")) {
@@ -7225,7 +8041,9 @@ async function captureFastHTML() {
   // Get form values
   const emrTypeSelect = document.getElementById("emr-type");
   const sessionTypeSelect = document.getElementById("session-type");
-  const documentationMethodSelect = document.getElementById("documentation-method");
+  const documentationMethodSelect = document.getElementById(
+    "documentation-method"
+  );
 
   if (!emrTypeSelect || !sessionTypeSelect || !documentationMethodSelect) {
     showErrorMessage("Form elements not found. Please try again.");
@@ -7233,7 +8051,8 @@ async function captureFastHTML() {
   }
 
   const emrTypeName = emrTypeSelect.options[emrTypeSelect.selectedIndex]?.text;
-  const sessionType = sessionTypeSelect.options[sessionTypeSelect.selectedIndex]?.text;
+  const sessionType =
+    sessionTypeSelect.options[sessionTypeSelect.selectedIndex]?.text;
   const documentationMethodId = documentationMethodSelect.value;
 
   // Validate form fields
@@ -7253,7 +8072,7 @@ async function captureFastHTML() {
   console.log("📋 Form values:", {
     emrTypeName,
     sessionType,
-    documentationMethodId
+    documentationMethodId,
   });
 
   // Show loading state
@@ -7270,21 +8089,21 @@ async function captureFastHTML() {
       chrome.runtime.sendMessage(
         {
           action: "captureForAPI",
-          url: tabs[0].url
+          url: tabs[0].url,
         },
         async function (response) {
           console.log("📨 Capture response:", response);
 
           if (response && response.success && response.html) {
             console.log("✅ Page captured successfully");
-            
+
             // Send to API
             await sendEMRTypeToAPI({
               emrTypeName,
               sessionType,
               documentationMethodId,
               htmlContent: response.html,
-              pageUrl: tabs[0].url
+              pageUrl: tabs[0].url,
             });
           } else {
             console.error("❌ Capture failed:", response?.error);
@@ -7330,17 +8149,21 @@ async function sendEMRTypeToAPI(data) {
     formData.append("session_type", data.sessionType);
     formData.append("documentation_method_id", data.documentationMethodId);
     formData.append("emr_url", emrUrl);
+    formData.append("created_from_chrome", "true");
 
     // Create HTML file from captured content
     const htmlBlob = new Blob([data.htmlContent], { type: "text/html" });
-    const fileName = `${data.emrTypeName.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().replace(/[:.]/g, '-')}.html`;
+    const fileName = `${data.emrTypeName.replace(
+      /[^a-z0-9]/gi,
+      "_"
+    )}_${new Date().toISOString().replace(/[:.]/g, "-")}.html`;
     formData.append("files", htmlBlob, fileName);
 
     console.log("📦 FormData prepared:", {
       name: data.emrTypeName,
       session_type: data.sessionType,
       documentation_method_id: data.documentationMethodId,
-      file: fileName
+      file: fileName,
     });
 
     // Send to API
@@ -7360,8 +8183,12 @@ async function sendEMRTypeToAPI(data) {
     }
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
-      throw new Error(errorData.message || `Failed to create EMR type: ${response.status}`);
+      const errorData = await response
+        .json()
+        .catch(() => ({ message: "Unknown error" }));
+      throw new Error(
+        errorData.message || `Failed to create EMR type: ${response.status}`
+      );
     }
 
     const responseData = await response.json();
@@ -7372,7 +8199,6 @@ async function sendEMRTypeToAPI(data) {
     document.getElementById("emr-type").value = "";
     document.getElementById("session-type").value = "";
     document.getElementById("documentation-method").value = "";
-
   } catch (error) {
     console.error("❌ Error sending EMR type to API:", error);
     showErrorMessage(`Failed to create EMR type: ${error.message}`);
@@ -8307,22 +9133,26 @@ function escapeRegExp(string) {
 
 // Listen for fillSessionData message from background script
 chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
-  if (message.action === 'fillSessionData') {
-    console.log('SessyNote: Received fillSessionData in popup', message.data);
-    
+  if (message.action === "fillSessionData") {
+    console.log(
+      "✅ SessyNote POPUP: Received fillSessionData - Panel is OPEN",
+      message.data
+    );
+
     try {
       // Navigate to Sessions tab
-      navigateToPage('sessions');
-      
+      navigateToPage("sessions");
+
       // Wait for page to load
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
       // Trigger auto-fill
       await autoFillSessionFromScrapedData(message.data);
-      
+
+      console.log("✅ SessyNote POPUP: Auto-fill complete, sending response");
       sendResponse({ success: true });
     } catch (error) {
-      console.error('SessyNote: Error auto-filling session:', error);
+      console.error("❌ SessyNote POPUP: Error auto-filling session:", error);
       sendResponse({ success: false, error: error.message });
     }
   }
@@ -8331,194 +9161,794 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
 
 async function autoFillSessionFromScrapedData(data) {
   const { scrapedData, emrTypeId } = data;
-  
-  console.log('SessyNote: Starting auto-fill with data:', scrapedData);
-  
-  // First, find the client by name and navigate to their detail page
-  if (scrapedData.client) {
-    const clientId = await findClientIdByName(scrapedData.client);
-    
-    if (clientId) {
-      console.log('SessyNote: Found client ID:', clientId);
-      
-      // Navigate to Clients page first
-      navigateToPage('clients');
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      // Navigate to client detail page
-      await navigateToClientDetail(clientId);
-      await new Promise(resolve => setTimeout(resolve, 500));
-    } else {
-      console.warn('SessyNote: Client not found, opening modal in Sessions tab');
-      navigateToPage('sessions');
-      await new Promise(resolve => setTimeout(resolve, 300));
+
+  console.log("SessyNote: Starting auto-fill with data:", scrapedData);
+  console.log("SessyNote: EMR Type ID:", emrTypeId);
+
+  // Navigate directly to the auto-detected session page
+  navigateToPage("auto-detected-session");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  // Store the scraped data and EMR type ID for the page to use
+  await chrome.storage.local.set({
+    autoDetectedSessionData: scrapedData,
+    autoDetectedEmrTypeId: emrTypeId,
+  });
+
+  // Populate the new page with data
+  await populateAutoDetectedSessionPage(scrapedData, emrTypeId);
+
+  console.log("SessyNote: Auto-fill complete");
+
+  // Stop the blinking icon
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, { action: "stopBlinking" });
     }
+  });
+}
+
+// Global variables to store field data for edit mode
+let currentAutoDetectedDynamicFields = null;
+let currentAutoDetectedScrapedData = null;
+
+// Global variables to store modalities and modality steps
+let allModalities = [];
+let allModalitySteps = [];
+
+async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
+  console.log("🔄 Populating auto-detected session page...");
+  console.log("📊 Scraped data:", scrapedData);
+  console.log("📊 EMR Type ID:", emrTypeId);
+
+  try {
+    // Find client ID by name
+    const clientName = scrapedData.Client || scrapedData.client;
+    const clientId = await findClientIdByName(clientName);
+
+    if (!clientId) {
+      showErrorMessage(`Client not found: ${clientName}`);
+      return;
+    }
+
+    // Get EMR type name
+    const emrTypeName = await getEMRTypeName(emrTypeId);
+
+    // Fetch dynamic fields for this EMR type
+    const dynamicFields = await getSessionDetailFields(emrTypeId);
+    console.log("📊 Dynamic fields fetched:", dynamicFields);
+
+    // Store globally for edit mode access
+    currentAutoDetectedDynamicFields = dynamicFields;
+    currentAutoDetectedScrapedData = scrapedData;
+
+    // Populate static fields (Client, Type, Instructions) with tooltips
+    const autoClientEl = document.getElementById("auto-client");
+    if (autoClientEl) {
+      autoClientEl.textContent = clientName;
+      autoClientEl.title = clientName; // Tooltip for full text (browser handles escaping)
+    }
+
+    const autoTypeEl = document.getElementById("auto-type");
+    if (autoTypeEl) {
+      autoTypeEl.textContent = emrTypeName;
+      autoTypeEl.title = emrTypeName; // Tooltip for full text (browser handles escaping)
+    }
+
+    const autoInstructionsEl = document.getElementById("auto-instructions");
+    if (autoInstructionsEl) {
+      const instructionsText =
+        scrapedData.Instructions || scrapedData.instructions || "";
+      autoInstructionsEl.textContent = instructionsText;
+      if (instructionsText) {
+        autoInstructionsEl.title = instructionsText; // Tooltip for full text (browser handles escaping)
+      }
+    }
+
+    // Populate confirmed results fields (view mode)
+    const confirmedContainer = document.getElementById(
+      "auto-confirmed-results-container"
+    );
+    confirmedContainer.innerHTML = ""; // Clear
+
+    console.log(
+      "📋 Confirmed Results count:",
+      dynamicFields.confirmedResults.length
+    );
+    console.log("📋 Confirmed Results:", dynamicFields.confirmedResults);
+
+    dynamicFields.confirmedResults.forEach((result, index) => {
+      console.log(`🔍 Processing confirmed result #${index + 1}:`, result);
+
+      // Skip client field - it's already shown as static field
+      const keyLower = result.key ? result.key.toLowerCase().trim() : "";
+      if (keyLower === "client" || keyLower === "client name") {
+        console.log("⏭️ Skipping client field - already shown as static field");
+        return;
+      }
+
+      // Find field definition from fields array using result.key (matching field.name)
+      let fieldDef = dynamicFields.fields.find((f) => f.name === result.key);
+
+      // Try case-insensitive matching if exact match not found
+      if (!fieldDef) {
+        fieldDef = dynamicFields.fields.find((field) => {
+          if (!field.name) return false;
+          const normalizedFieldName = field.name
+            .toLowerCase()
+            .replace(/-/g, " ")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          const normalizedResultKey = result.key
+            .toLowerCase()
+            .replace(/-/g, " ")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+          return normalizedFieldName === normalizedResultKey;
+        });
+      }
+
+      console.log(`🔍 Field definition for '${result.key}':`, fieldDef);
+
+      if (fieldDef) {
+        // Get the api_name to look up value in scraped data
+        const fieldMapping = dynamicFields.fieldMapping;
+        let apiName = fieldMapping[result.key];
+
+        if (!apiName && fieldDef) {
+          apiName = fieldDef.api_name;
+        }
+
+        console.log(
+          `🔍 Using api_name '${apiName}' to get value from scraped data`
+        );
+
+        // Get value from scraped data using api_name, or empty if not present
+        const fieldValue =
+          apiName && scrapedData.hasOwnProperty(apiName)
+            ? scrapedData[apiName]
+            : "";
+        console.log(
+          `✅ Creating field '${result.key}' with value:`,
+          fieldValue
+        );
+
+        const fieldElement = createDynamicFieldElement(
+          result.key, // Display name (what user sees)
+          fieldValue !== null && fieldValue !== undefined ? fieldValue : "",
+          fieldDef.type
+        );
+        confirmedContainer.appendChild(fieldElement);
+      } else {
+        console.log(`❌ No field definition found for key '${result.key}'`);
+      }
+    });
+
+    // Populate manual fields (edit mode)
+    const manualContainer = document.getElementById(
+      "auto-manual-fields-container"
+    );
+    manualContainer.innerHTML = ""; // Clear
+
+    // Fetch modalities and modality steps from API
+    console.log("📥 Fetching modalities and modality steps...");
+    allModalities = await fetchModalities();
+    allModalitySteps = await fetchModalitySteps();
+
+    // Add Modality field (always show for all EMR types) - dropdown
+    const modalityFieldElement = document.createElement("div");
+    modalityFieldElement.className =
+      "session-detail-item dynamic-field editable-field";
+    modalityFieldElement.innerHTML = `
+      <span class="detail-label">Modality</span>
+      <span class="detail-value">
+        <select data-field-name="Modality" data-field-type="dropdown" class="editable-input" id="modality-select">
+          <option value="">Select Modality</option>
+        </select>
+      </span>
+    `;
+    manualContainer.appendChild(modalityFieldElement);
+
+    // Populate Modality dropdown
+    const modalitySelect = document.getElementById("modality-select");
+    if (modalitySelect && allModalities.length > 0) {
+      allModalities.forEach((modality) => {
+        const option = document.createElement("option");
+        option.value = modality.name;
+        option.textContent = modality.name;
+        if (scrapedData.modality && scrapedData.modality === modality.name) {
+          option.selected = true;
+        }
+        modalitySelect.appendChild(option);
+      });
+
+      // Add event listener to update Modality Steps when Modality changes
+      modalitySelect.addEventListener("change", function () {
+        const selectedModalityName = this.value;
+        updateModalityStepsDropdown(selectedModalityName);
+      });
+    }
+
+    // Add Modality Steps field (always show for all EMR types) - dropdown
+    const modalityStepsFieldElement = document.createElement("div");
+    modalityStepsFieldElement.className =
+      "session-detail-item dynamic-field editable-field";
+    modalityStepsFieldElement.innerHTML = `
+      <span class="detail-label">Modality Steps</span>
+      <span class="detail-value">
+        <select data-field-name="Modality Steps" data-field-type="dropdown" class="editable-input" id="modality-steps-select">
+          <option value="">Select Modality Steps</option>
+        </select>
+      </span>
+    `;
+    manualContainer.appendChild(modalityStepsFieldElement);
+
+    // Populate Modality Steps dropdown based on selected Modality (if any)
+    if (scrapedData.modality) {
+      updateModalityStepsDropdown(scrapedData.modality);
+    }
+
+    // Add manual fields from EMR type
+    console.log("📋 Manual Fields count:", dynamicFields.manualFields.length);
+    console.log("📋 Manual Fields:", dynamicFields.manualFields);
+
+    dynamicFields.manualFields.forEach((field, index) => {
+      console.log(`🔍 Processing manual field #${index + 1}:`, field);
+
+      const fieldDef = dynamicFields.fields.find(
+        (f) =>
+          f.name &&
+          f.name.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim() ===
+            field.name
+              .toLowerCase()
+              .replace(/-/g, "")
+              .replace(/\s+/g, " ")
+              .trim()
+      );
+
+      console.log(
+        `🔍 Field definition for manual field '${field.name}':`,
+        fieldDef
+      );
+
+      if (fieldDef) {
+        const sessionKey = fieldDef.api_name;
+        const fieldValue = scrapedData[sessionKey];
+        console.log(
+          `✅ Creating manual field '${fieldDef.name}' with value:`,
+          fieldValue
+        );
+        const fieldElement = createEditableFieldElement(
+          fieldDef.name,
+          fieldValue !== null && fieldValue !== undefined ? fieldValue : "",
+          fieldDef.type,
+          fieldDef.dropdown_values || null
+        );
+        manualContainer.appendChild(fieldElement);
+      } else {
+        console.log(
+          `❌ No field definition found for manual field '${field.name}'`
+        );
+      }
+    });
+
+    console.log("✅ Auto-detected session page populated successfully");
+
+    // Set up the edit button handler after page is populated
+    setupAutoDetectedSessionHandlers();
+  } catch (error) {
+    console.error("❌ Error populating auto-detected session page:", error);
+    showErrorMessage(`Failed to load session data: ${error.message}`);
+  }
+}
+
+// Function to fetch modalities from API
+async function fetchModalities() {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found. Please log in again.");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/modalities`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch modalities: ${response.status}`);
+    }
+
+    const modalities = await response.json();
+    console.log("✅ Modalities fetched:", modalities);
+    return modalities;
+  } catch (error) {
+    console.error("❌ Error fetching modalities:", error);
+    showErrorMessage(`Failed to load modalities: ${error.message}`);
+    return [];
+  }
+}
+
+// Function to fetch modality steps from API
+async function fetchModalitySteps() {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found. Please log in again.");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/modality-steps`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch modality steps: ${response.status}`);
+    }
+
+    const modalitySteps = await response.json();
+    console.log("✅ Modality steps fetched:", modalitySteps);
+    return modalitySteps;
+  } catch (error) {
+    console.error("❌ Error fetching modality steps:", error);
+    showErrorMessage(`Failed to load modality steps: ${error.message}`);
+    return [];
+  }
+}
+
+// Function to filter modality steps by modality ID
+function filterModalityStepsByModalityId(modalityId) {
+  if (!modalityId) {
+    return [];
+  }
+  return allModalitySteps.filter((step) => step.modality_id === modalityId);
+}
+
+// Function to update Modality Steps dropdown based on selected Modality
+function updateModalityStepsDropdown(selectedModalityName) {
+  const modalityStepsSelect = document.querySelector(
+    'select[data-field-name="Modality Steps"]'
+  );
+  if (!modalityStepsSelect) {
+    console.log("❌ Modality Steps select not found");
+    return;
+  }
+
+  // If no modality is selected, clear the dropdown
+  if (!selectedModalityName) {
+    modalityStepsSelect.innerHTML =
+      '<option value="">Select Modality Steps</option>';
+    return;
+  }
+
+  // Find the modality ID by name
+  const selectedModality = allModalities.find(
+    (m) => m.name === selectedModalityName
+  );
+  if (!selectedModality) {
+    console.log("❌ Modality not found:", selectedModalityName);
+    modalityStepsSelect.innerHTML =
+      '<option value="">Select Modality Steps</option>';
+    return;
+  }
+
+  // Filter modality steps by modality ID
+  const filteredSteps = filterModalityStepsByModalityId(selectedModality.id);
+  console.log(
+    `✅ Filtered ${filteredSteps.length} modality steps for modality: ${selectedModalityName}`
+  );
+
+  // Clear and populate dropdown
+  modalityStepsSelect.innerHTML =
+    '<option value="">Select Modality Steps</option>';
+  filteredSteps.forEach((step) => {
+    const option = document.createElement("option");
+    option.value = step.name;
+    option.textContent = step.name;
+    modalityStepsSelect.appendChild(option);
+  });
+
+  // If there's a saved value, try to select it
+  if (
+    currentAutoDetectedScrapedData &&
+    currentAutoDetectedScrapedData.modality_steps
+  ) {
+    const savedValue = currentAutoDetectedScrapedData.modality_steps;
+    const matchingOption = Array.from(modalityStepsSelect.options).find(
+      (opt) => opt.value === savedValue || opt.textContent === savedValue
+    );
+    if (matchingOption) {
+      modalityStepsSelect.value = matchingOption.value;
+    }
+  }
+}
+
+// Helper function to create editable field elements (for edit mode)
+function createEditableFieldElement(
+  fieldName,
+  fieldValue,
+  fieldType,
+  dropdownValues
+) {
+  const fieldElement = document.createElement("div");
+  fieldElement.className = "session-detail-item dynamic-field editable-field";
+
+  // Format field name (convert snake_case to Title Case)
+  const formattedName = fieldName
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (l) => l.toUpperCase());
+
+  let inputElement = "";
+
+  if (fieldType === "boolean") {
+    const isChecked =
+      fieldValue === true ||
+      fieldValue === "true" ||
+      fieldValue === "True" ||
+      fieldValue === 1 ||
+      fieldValue === "1" ||
+      (typeof fieldValue === "string" && fieldValue.toLowerCase() === "true");
+    inputElement = `<input type="checkbox" ${
+      isChecked ? "checked" : ""
+    } data-field-name="${fieldName}" data-field-type="${fieldType}">`;
+  } else if (fieldType === "date") {
+    inputElement = `<input type="date" value="${
+      fieldValue || ""
+    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input date-input">`;
+  } else if (fieldType === "datetime") {
+    inputElement = `<input type="datetime-local" value="${
+      fieldValue || ""
+    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input datetime-input">`;
+  } else if (fieldType === "number") {
+    inputElement = `<input type="number" value="${
+      fieldValue || ""
+    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">`;
+  } else if (fieldType === "email") {
+    inputElement = `<input type="email" value="${
+      fieldValue || ""
+    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">`;
+  } else if (fieldType === "tel") {
+    inputElement = `<input type="tel" value="${
+      fieldValue || ""
+    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">`;
+  } else if (fieldType === "dropdown") {
+    let options = "";
+    if (dropdownValues) {
+      const optionsList = dropdownValues
+        .split("\n")
+        .filter((opt) => opt.trim());
+      optionsList.forEach((option) => {
+        const selected = option.trim() === fieldValue ? "selected" : "";
+        options += `<option value="${option.trim()}" ${selected}>${option.trim()}</option>`;
+      });
+    }
+    inputElement = `<select data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">${options}</select>`;
+  } else if (fieldType === "textarea") {
+    inputElement = `<textarea rows="3" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">${
+      fieldValue || ""
+    }</textarea>`;
   } else {
-    console.warn('SessyNote: No client in scraped data, opening modal in Sessions tab');
-    navigateToPage('sessions');
-    await new Promise(resolve => setTimeout(resolve, 300));
+    inputElement = `<input type="text" value="${
+      fieldValue || ""
+    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">`;
   }
-  
-  // Open the New Session modal
-  await showAddSessionModal();
-  
-  // Wait for modal to fully load
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // Select EMR type
-  const emrTypeSelect = document.getElementById('new-session-emr-type');
-  if (emrTypeSelect && emrTypeId) {
-    emrTypeSelect.value = emrTypeId;
-    
-    // Trigger change event to load dynamic fields
-    const changeEvent = new Event('change', { bubbles: true });
-    emrTypeSelect.dispatchEvent(changeEvent);
-    
-    // Wait for dynamic fields to load
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-  
-  // Fill dynamic fields with scraped data
-  fillDynamicFields(scrapedData);
-  
-  console.log('SessyNote: Auto-fill complete');
+
+  fieldElement.innerHTML = `
+    <span class="detail-label">${formattedName}</span>
+    <span class="detail-value">${inputElement}</span>
+  `;
+
+  return fieldElement;
 }
 
 async function findClientIdByName(clientName) {
-  console.log('SessyNote: Searching for client ID by name:', clientName);
-  
+  console.log("SessyNote: Searching for client ID by name:", clientName);
+
   try {
-    const result = await chrome.storage.local.get(['accessToken']);
+    const result = await chrome.storage.local.get(["accessToken"]);
     if (!result.accessToken) {
-      throw new Error('No access token found');
+      throw new Error("No access token found");
     }
-    
+
+    // Parse name into two parts (could be First+Last or Last+First)
+    let part1 = "";
+    let part2 = "";
+
+    if (clientName.includes(",")) {
+      // Has comma: "Last, First" or "First, Last"
+      const parts = clientName.split(",").map((p) => p.trim());
+      part1 = parts[0];
+      part2 = parts[1] || "";
+    } else {
+      // No comma: "First Last" or "Last First"
+      const parts = clientName.trim().split(/\s+/);
+      part1 = parts[0] || "";
+      part2 = parts.slice(1).join(" ");
+    }
+
+    console.log(
+      "SessyNote: Searching for client with name parts:",
+      part1,
+      "+",
+      part2
+    );
+
     // Fetch all clients
     const response = await fetch(`${API_BASE_URL}/api/Clients`, {
-      method: 'GET',
+      method: "GET",
       headers: {
-        'Authorization': `Bearer ${result.accessToken}`,
-        'Content-Type': 'application/json'
-      }
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to fetch clients: ${response.status}`);
     }
-    
+
     const clients = await response.json();
-    console.log('SessyNote: Fetched clients:', clients.length);
-    
-    // Normalize the scraped client name for comparison
-    const normalizedScrapedName = clientName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    
-    // Try to find matching client
+    console.log("SessyNote: Fetched clients:", clients.length);
+
+    // Normalize both parts
+    const normPart1 = part1.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normPart2 = part2.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    // Try to find matching client - try BOTH combinations
     for (const client of clients) {
-      const clientFullName = `${client.first_name || ''} ${client.last_name || ''}`.trim();
-      const normalizedClientName = clientFullName.toLowerCase().replace(/[^a-z0-9]/g, '');
-      
-      // Check if names match (after normalization)
-      if (normalizedClientName === normalizedScrapedName || 
-          normalizedScrapedName.includes(normalizedClientName) || 
-          normalizedClientName.includes(normalizedScrapedName)) {
-        
-        console.log('SessyNote: Found matching client:', clientFullName, '- ID:', client.id || client.client_id);
+      const clientFirstNorm = (client.first_name || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+      const clientLastNorm = (client.last_name || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, "");
+
+      // Try: part1=First, part2=Last
+      if (clientFirstNorm === normPart1 && clientLastNorm === normPart2) {
+        console.log(
+          "✅ SessyNote: Found client (First+Last):",
+          client.first_name,
+          client.last_name,
+          "- ID:",
+          client.id || client.client_id
+        );
+        return client.id || client.client_id;
+      }
+
+      // Try: part1=Last, part2=First
+      if (clientFirstNorm === normPart2 && clientLastNorm === normPart1) {
+        console.log(
+          "✅ SessyNote: Found client (Last+First):",
+          client.first_name,
+          client.last_name,
+          "- ID:",
+          client.id || client.client_id
+        );
         return client.id || client.client_id;
       }
     }
-    
-    console.warn('SessyNote: No matching client found for:', clientName);
+
+    console.warn("⚠️ SessyNote: No matching client found for:", clientName);
     return null;
-    
   } catch (error) {
-    console.error('SessyNote: Error finding client by name:', error);
+    console.error("❌ SessyNote: Error finding client by name:", error);
     return null;
   }
 }
 
 async function navigateToClientDetail(clientId) {
-  console.log('SessyNote: Navigating to client detail:', clientId);
-  
+  console.log("SessyNote: Navigating to client detail:", clientId);
+
   try {
     // Fetch client details
-    const result = await chrome.storage.local.get(['accessToken']);
+    const result = await chrome.storage.local.get(["accessToken"]);
     const response = await fetch(`${API_BASE_URL}/api/Clients/${clientId}`, {
-      method: 'GET',
+      method: "GET",
       headers: {
-        'Authorization': `Bearer ${result.accessToken}`,
-        'Content-Type': 'application/json'
-      }
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
     });
-    
+
     if (!response.ok) {
       throw new Error(`Failed to fetch client: ${response.status}`);
     }
-    
+
     const client = await response.json();
-    console.log('SessyNote: Client details fetched:', client);
-    
+    console.log("SessyNote: Client details fetched:", client);
+
     // Store as current client
     await chrome.storage.local.set({
       currentClient: {
         clientId: clientId,
-        ...client
-      }
+        ...client,
+      },
     });
-    
+
     // Show client detail page
     showClientDetail(client);
-    
   } catch (error) {
-    console.error('SessyNote: Error navigating to client detail:', error);
+    console.error("SessyNote: Error navigating to client detail:", error);
     throw error;
   }
 }
 
+function parseDate(dateString) {
+  // Parse various date formats to YYYY-MM-DD
+  // Examples: "Tuesday 09-30-2025", "09/30/2025", "2025-09-30"
+
+  if (!dateString) return null;
+
+  try {
+    // Remove day name if present ("Tuesday 09-30-2025" -> "09-30-2025")
+    const cleaned = dateString.replace(/^\w+\s+/, "");
+
+    // Try parsing as Date
+    const date = new Date(cleaned);
+    if (!isNaN(date.getTime())) {
+      // Format as YYYY-MM-DD
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    return null;
+  } catch (error) {
+    console.error("SessyNote: Error parsing date:", error);
+    return null;
+  }
+}
+
+function parseDateTime(dateTimeString) {
+  // Parse to YYYY-MM-DDTHH:MM format for datetime-local input
+  // Example: "Tuesday 09-30-2025 02:30 PM" -> "2025-09-30T14:30"
+
+  if (!dateTimeString) return null;
+
+  try {
+    const date = new Date(dateTimeString);
+    if (!isNaN(date.getTime())) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, "0");
+      const day = String(date.getDate()).padStart(2, "0");
+      const hours = String(date.getHours()).padStart(2, "0");
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      return `${year}-${month}-${day}T${hours}:${minutes}`;
+    }
+    return null;
+  } catch (error) {
+    console.error("SessyNote: Error parsing datetime:", error);
+    return null;
+  }
+}
+
+function parseTime(timeString) {
+  // Parse to HH:MM format for time input
+  // Examples: "02:30 PM" -> "14:30", "2:30 PM" -> "14:30"
+
+  if (!timeString) return null;
+
+  try {
+    // Try parsing with a date to handle AM/PM
+    const date = new Date(`2000-01-01 ${timeString}`);
+    if (!isNaN(date.getTime())) {
+      const hours = String(date.getHours()).padStart(2, "0");
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      return `${hours}:${minutes}`;
+    }
+    return null;
+  } catch (error) {
+    console.error("SessyNote: Error parsing time:", error);
+    return null;
+  }
+}
+
 function fillDynamicFields(scrapedData) {
-  console.log('SessyNote: Filling dynamic fields with:', scrapedData);
-  
+  console.log("SessyNote: Filling dynamic fields with:", scrapedData);
+
   // Iterate through scraped data and fill corresponding fields
   for (const [apiName, value] of Object.entries(scrapedData)) {
-    if (apiName === 'client') continue; // Already handled
-    
+    if (apiName === "client") continue; // Already handled
+
     // Try to find the field by various possible IDs/names
     const possibleIds = [
       `new-${apiName}`,
-      `new-${apiName.replace(/_/g, '-')}`,
+      `new-${apiName.replace(/_/g, "-")}`,
       apiName,
-      apiName.replace(/_/g, '-')
+      apiName.replace(/_/g, "-"),
     ];
-    
+
     let field = null;
     for (const id of possibleIds) {
       field = document.getElementById(id);
       if (field) break;
-      
+
       // Also try querySelector with name attribute
       field = document.querySelector(`[name="${id}"]`);
       if (field) break;
     }
-    
+
     if (field) {
-      // Fill the field based on its type
-      if (field.type === 'checkbox') {
-        field.checked = value === true || value === 'true' || value === '1' || value === 1;
-      } else if (field.tagName === 'SELECT') {
-        // For dropdowns, try to match value
+      // Fill the field based on its type and data type
+      if (field.type === "checkbox") {
+        // Boolean fields
+        field.checked =
+          value === true ||
+          value === "true" ||
+          value === "1" ||
+          value === 1 ||
+          (typeof value === "string" && value.toLowerCase() === "yes");
+      } else if (field.type === "date") {
+        // Date fields (DATE type)
+        const parsedDate = parseDate(value);
+        if (parsedDate) {
+          field.value = parsedDate;
+        } else {
+          console.warn(`SessyNote: Could not parse date: ${value}`);
+        }
+      } else if (field.type === "datetime-local") {
+        // DateTime fields (TIMESTAMP type)
+        const parsedDateTime = parseDateTime(value);
+        if (parsedDateTime) {
+          field.value = parsedDateTime;
+        } else {
+          console.warn(`SessyNote: Could not parse datetime: ${value}`);
+        }
+      } else if (field.type === "time") {
+        // Time fields (TIME type)
+        const parsedTime = parseTime(value);
+        if (parsedTime) {
+          field.value = parsedTime;
+        } else {
+          console.warn(`SessyNote: Could not parse time: ${value}`);
+        }
+      } else if (field.type === "number") {
+        // Integer/Numeric fields
+        const numValue = parseFloat(value);
+        if (!isNaN(numValue)) {
+          field.value = numValue;
+        } else {
+          console.warn(`SessyNote: Could not parse number: ${value}`);
+        }
+      } else if (field.tagName === "SELECT") {
+        // Dropdown/Enum fields
         const options = Array.from(field.options);
-        const matchingOption = options.find(opt => 
-          opt.value.toLowerCase() === value.toLowerCase() || 
-          opt.textContent.toLowerCase() === value.toLowerCase()
+        const matchingOption = options.find(
+          (opt) =>
+            opt.value.toLowerCase() === value.toLowerCase() ||
+            opt.textContent.toLowerCase() === value.toLowerCase()
         );
         if (matchingOption) {
           field.value = matchingOption.value;
         } else {
           field.value = value;
         }
+      } else if (field.tagName === "TEXTAREA") {
+        // Text/JSONB fields
+        field.value = value;
       } else {
+        // Default: Text/VARCHAR/UUID fields
         field.value = value;
       }
-      
+
       console.log(`SessyNote: Filled field ${apiName} with:`, value);
     } else {
       console.warn(`SessyNote: Field not found for ${apiName}`);

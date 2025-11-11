@@ -443,14 +443,6 @@
 
           <!-- Client Info Tab Content -->
           <div class="tab-content active" id="client-info-content">
-            <!-- Client Detected Banner -->
-          <div class="client-detected-banner">
-            <div class="banner-content">
-              <div class="banner-icon">✓</div>
-              <span class="banner-text">Client Detected</span>
-            </div>
-          </div>
-
           <!-- Client Detail Card -->
           <div class="detail-card">
             <h2 class="card-title">Client Detail</h2>
@@ -621,15 +613,6 @@
             </div>
           </div>
 
-          <!-- Session Detected Banner -->
-          <div class="session-detected-banner">
-            <div class="banner-content">
-              <div class="banner-icon">✓</div>
-              <span class="banner-text">Session Detected</span>
-            </div>
-          </div>
-
-
           <!-- Session Info Tab Content -->
           <div class="tab-content active" id="session-info-content">
             <!-- Session Details Card -->
@@ -723,6 +706,57 @@
           <div class="session-action-buttons">
             <button class="edit-button">Edit</button>
             <button class="generate-ai-notes-button">Generate AI Notes</button>
+          </div>
+        </div>
+
+        <!-- Auto-Detected Session Page Content -->
+        <div class="page-content" id="auto-detected-session-page" style="display: none">
+          <!-- Session Detected Banner -->
+          <div class="session-detected-banner">
+            <div class="detected-icon">✓</div>
+            <span class="detected-text">Session Detected</span>
+          </div>
+
+          <!-- Session Tabs -->
+          <div class="session-tabs-container" style="margin-top: 16px;">
+            <div class="session-tabs">
+              <div class="tab-button active" id="auto-session-info-tab">Session Info</div>
+              <div class="tab-button" id="auto-activity-tab">Activity</div>
+            </div>
+          </div>
+
+          <!-- Session Info Tab Content -->
+          <div class="tab-content active" id="auto-session-info-content">
+            <div class="detail-card" id="auto-session-detail-card">
+              <h2 class="card-title">Session Details</h2>
+              <div class="session-detail-item view-mode" id="auto-client-container">
+                <span class="detail-label">Client</span>
+                <span class="detail-value" id="auto-client">-</span>
+              </div>
+              <div class="session-detail-item view-mode" id="auto-type-container">
+                <span class="detail-label">EMR Type</span>
+                <span class="detail-value" id="auto-type">-</span>
+              </div>
+              <div class="session-detail-item view-mode" id="auto-instructions-container">
+                <span class="detail-label">Instructions</span>
+                <span class="detail-value" id="auto-instructions">-</span>
+              </div>
+              <div id="auto-confirmed-results-container"></div>
+              <div id="auto-manual-fields-container"></div>
+            </div>
+          </div>
+
+          <!-- Activity Tab Content -->
+          <div class="tab-content" id="auto-activity-content" style="display: none">
+            <div style="padding: 20px; text-align: center; color: #666;">
+              <p>Activity content coming soon...</p>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="session-action-buttons">
+            <button class="edit-button" id="auto-edit-button">Edit</button>
+            <button class="generate-ai-notes-button" id="auto-generate-button">Generate AI Notes</button>
           </div>
         </div>
       </div>

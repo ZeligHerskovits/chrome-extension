@@ -49,44 +49,60 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   // Handle fetch EMR type request from content script
   if (message.action === 'fetchEMRType') {
-    console.log('SessyNote: Fetching EMR type:', message.emrTypeId);
+    console.log('SessyNote: Fetching EMR type from cache:', message.emrTypeId);
     
-    chrome.storage.local.get(['accessToken'], async (result) => {
-      if (!result.accessToken) {
-        sendResponse({ success: false, error: 'No access token' });
-        return;
-      }
-      
-      try {
-        const response = await fetch(`https://noteddevapi.objectif.solutions/api/v1/emr-types/${message.emrTypeId}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${result.accessToken}`,
-            'Content-Type': 'application/json'
+    chrome.storage.local.get(['emrResponse', 'emrTypeId'], async (result) => {
+      // Use cached response if available
+      if (result.emrResponse && result.emrTypeId === message.emrTypeId) {
+        console.log('SessyNote: Using cached EMR response');
+        sendResponse({ 
+          success: true, 
+          emrType: { 
+            id: message.emrTypeId,
+            response: result.emrResponse 
+          } 
+        });
+      } else {
+        console.warn('SessyNote: No cached response found, fetching from API');
+        
+        chrome.storage.local.get(['accessToken'], async (tokenResult) => {
+          if (!tokenResult.accessToken) {
+            sendResponse({ success: false, error: 'No access token' });
+            return;
+          }
+          
+          try {
+            const response = await fetch(`https://noteddevapi.objectif.solutions/api/v1/emr-types/${message.emrTypeId}`, {
+              method: 'GET',
+              headers: {
+                'Authorization': `Bearer ${tokenResult.accessToken}`,
+                'Content-Type': 'application/json'
+              }
+            });
+            
+            if (!response.ok) {
+              throw new Error(`Failed to fetch EMR type: ${response.status}`);
+            }
+            
+            const emrType = await response.json();
+            
+            // Parse response field if it's a JSON string
+            if (emrType.response && typeof emrType.response === 'string') {
+              try {
+                emrType.response = JSON.parse(emrType.response);
+              } catch (e) {
+                console.error('SessyNote: Failed to parse response field:', e);
+              }
+            }
+            
+            console.log('SessyNote: EMR type fetched from API:', emrType);
+            sendResponse({ success: true, emrType: emrType });
+            
+          } catch (error) {
+            console.error('SessyNote: Error fetching EMR type:', error);
+            sendResponse({ success: false, error: error.message });
           }
         });
-        
-        if (!response.ok) {
-          throw new Error(`Failed to fetch EMR type: ${response.status}`);
-        }
-        
-        const emrType = await response.json();
-        
-        // Parse response field if it's a JSON string
-        if (emrType.response && typeof emrType.response === 'string') {
-          try {
-            emrType.response = JSON.parse(emrType.response);
-          } catch (e) {
-            console.error('SessyNote: Failed to parse response field:', e);
-          }
-        }
-        
-        console.log('SessyNote: EMR type fetched:', emrType);
-        sendResponse({ success: true, emrType: emrType });
-        
-      } catch (error) {
-        console.error('SessyNote: Error fetching EMR type:', error);
-        sendResponse({ success: false, error: error.message });
       }
     });
     return true; // Keep channel open for async response
@@ -100,24 +116,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (tabs[0]) {
         const windowId = tabs[0].windowId;
         
+        // Store the data regardless
+        chrome.storage.local.set({ 
+          pendingSessionData: message.data,
+          sessionDataTimestamp: Date.now()
+        });
+        
+        // Try to send message to popup - if it responds, panel is open
+        chrome.runtime.sendMessage(
+          { action: 'fillSessionData', data: message.data },
+          (response) => {
+            if (chrome.runtime.lastError || !response) {
+              // No response = panel is closed
+              console.log('SessyNote: Panel is closed (no response), making button blink');
+              chrome.tabs.sendMessage(tabs[0].id, { 
+                action: 'startBlinking' 
+              });
+            } else {
+              // Got response = panel is open
+              console.log('SessyNote: Panel is open, auto-filled immediately');
+            }
+          }
+        );
+      }
+    });
+    return true;
+  }
+  
+  // Handle close side panel from popup
+  if (message.action === "closeSidePanel") {
+    console.log('SessyNote: Received closeSidePanel message');
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs[0]) {
+        const windowId = tabs[0].windowId;
+        
         try {
-          // Open side panel
-          await chrome.sidePanel.open({ windowId: windowId });
-          sidePanelState.set(windowId, true);
-          console.log('SessyNote: Side panel opened for auto-fill');
-          
-          // Wait a bit for popup to load
-          setTimeout(() => {
-            // Send data to popup
-            chrome.runtime.sendMessage({
-              action: 'fillSessionData',
-              data: message.data
-            });
-            console.log('SessyNote: Sent fillSessionData to popup');
-          }, 500);
-          
+          // Close by setting panel to disabled, then re-enabling
+          await chrome.sidePanel.setOptions({
+            tabId: tabs[0].id,
+            enabled: false
+          });
+          await chrome.sidePanel.setOptions({
+            tabId: tabs[0].id,
+            path: 'popup.html',
+            enabled: true
+          });
+          sidePanelState.set(windowId, false);
+          console.log('SessyNote: Side panel closed');
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'sidePanelClosed' });
         } catch (error) {
-          console.error('SessyNote: Error opening panel for auto-fill:', error);
+          console.error('SessyNote: Error closing side panel:', error);
         }
       }
     });
