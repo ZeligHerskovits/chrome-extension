@@ -1,4 +1,4 @@
-// FAST CAPTURE - Popup Script
+﻿// FAST CAPTURE - Popup Script
 // Handles captured data and creates HTML file quickly
 // Auto-detected session page support
 
@@ -724,13 +724,28 @@ function setupEditButtonHandlers() {
 }
 
 function setupAutoDetectedSessionHandlers() {
+  console.log("🔧 setupAutoDetectedSessionHandlers called");
+  
   const autoEditBtn = document.getElementById("auto-edit-button");
+  console.log("🔍 autoEditBtn found:", !!autoEditBtn);
 
   if (autoEditBtn) {
     autoEditBtn.addEventListener("click", function () {
-      console.log("✏️ Auto-detected session Edit button clicked");
+      console.log("✒️ Auto-detected session Edit button clicked");
       switchAutoDetectedSessionToEditMode();
     });
+  }
+
+  const autoGenerateButton = document.getElementById("auto-generate-button");
+  console.log("🔍 autoGenerateButton found:", !!autoGenerateButton);
+  
+  if (autoGenerateButton) {
+    const newButton = autoGenerateButton.cloneNode(true);
+    autoGenerateButton.parentNode.replaceChild(newButton, autoGenerateButton);
+    newButton.addEventListener("click", handleGenerateAINotesFromDetected);
+    console.log("✅ Auto-generate button set up");
+  } else {
+    console.log("❌ Auto-generate button NOT FOUND!");
   }
 }
 
@@ -3094,6 +3109,9 @@ function renderDynamicFields(dynamicFields) {
       }
     });
 
+    // Add Modality and Modality Steps fields (between confirmed results and manual fields)
+    addModalityFieldsToView(session, dynamicFields, dynamicFieldsSection);
+
     // Process manual fields - match with emr-types-fields using api_name
     dynamicFields.manualFields.forEach((field) => {
       console.log(`🔍 Processing manual field:`, field);
@@ -3155,6 +3173,89 @@ function renderDynamicFields(dynamicFields) {
     sessionDetailsContainer.appendChild(dynamicFieldsSection);
     console.log("✅ Dynamic fields rendered successfully");
   });
+}
+
+// Function to add Modality and Modality Steps fields to session view
+async function addModalityFieldsToView(session, dynamicFields, container) {
+  // Find modality and modality_steps field definitions
+  const modalityField = dynamicFields.fields.find(
+    (f) => f.name && f.name.toLowerCase().includes("modality") && !f.name.toLowerCase().includes("step")
+  );
+  const modalityStepsField = dynamicFields.fields.find(
+    (f) => f.name && f.name.toLowerCase().includes("modality") && f.name.toLowerCase().includes("step")
+  );
+
+  if (!modalityField || !modalityStepsField) {
+    console.log("❌ Modality field definitions not found");
+    return;
+  }
+
+  const modalityApiName = modalityField.api_name;
+  const modalityStepsApiName = modalityStepsField.api_name;
+
+  // Get modality ID and modality steps ID from session
+  const modalityId = session[modalityApiName];
+  const modalityStepsId = session[modalityStepsApiName];
+
+  console.log("🔍 Modality ID from session:", modalityId);
+  console.log("🔍 Modality Steps ID from session:", modalityStepsId);
+
+  // Fetch modality and modality steps names
+  try {
+    const tokenResult = await chrome.storage.local.get(["accessToken"]);
+    if (!tokenResult.accessToken) return;
+
+    let modalityName = "Not specified";
+    let modalityStepsName = "Not specified";
+
+    // Fetch modality name if ID exists
+    if (modalityId) {
+      const modalitiesResponse = await fetch(`${API_BASE_URL}/modalities/`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${tokenResult.accessToken}`,
+          "Content-Type": "application/json",
+        },
+      });
+      if (modalitiesResponse.ok) {
+        const modalities = await modalitiesResponse.json();
+        const modality = modalities.find((m) => m.id === modalityId || m.id == modalityId);
+        if (modality) {
+          modalityName = modality.name;
+        }
+      }
+    }
+
+    // Fetch modality steps name if ID exists
+    if (modalityStepsId) {
+      const modalityStepsResponse = await fetch(`${API_BASE_URL}/modality-steps/`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${tokenResult.accessToken}`,
+          "Content-Type": "application/json",
+        },
+      });
+      if (modalityStepsResponse.ok) {
+        const modalitySteps = await modalityStepsResponse.json();
+        const modalityStep = modalitySteps.find((ms) => ms.id === modalityStepsId || ms.id == modalityStepsId);
+        if (modalityStep) {
+          modalityStepsName = modalityStep.name;
+        }
+      }
+    }
+
+    // Add modality field
+    const modalityElement = createDynamicFieldElement("Modality", modalityName, "text");
+    container.appendChild(modalityElement);
+
+    // Add modality steps field
+    const modalityStepsElement = createDynamicFieldElement("Modality Steps", modalityStepsName, "text");
+    container.appendChild(modalityStepsElement);
+
+    console.log("✅ Added Modality and Modality Steps fields");
+  } catch (error) {
+    console.error("❌ Error fetching modality data:", error);
+  }
 }
 
 // Function to create a dynamic field element
@@ -6177,7 +6278,11 @@ async function showAddSessionModal() {
   // Setup EMR type change handler to load dynamic fields
   const emrTypeSelect = document.getElementById("new-session-emr-type");
   if (emrTypeSelect) {
-    emrTypeSelect.addEventListener("change", async function () {
+    // Remove existing listeners to prevent duplicates
+    const newEmrTypeSelect = emrTypeSelect.cloneNode(true);
+    emrTypeSelect.parentNode.replaceChild(newEmrTypeSelect, emrTypeSelect);
+    
+    newEmrTypeSelect.addEventListener("change", async function () {
       const emrTypeId = this.value;
       if (emrTypeId) {
         console.log("🔑 EMR Type selected:", emrTypeId);
@@ -6299,7 +6404,73 @@ async function loadEMRTypesForSessionModal() {
     showErrorMessage("Failed to load EMR types");
   }
 }
+// Fetch all modalities
+async function fetchModalities() {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found");
+    }
 
+    const response = await fetch(`${API_BASE_URL}/modalities/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch modalities: ${response.status}`);
+    }
+
+    const modalities = await response.json();
+    console.log("📋 Modalities loaded:", modalities);
+    return modalities;
+  } catch (error) {
+    console.error("❌ Error loading modalities:", error);
+    return [];
+  }
+}
+
+// Fetch all modality steps
+async function fetchModalitySteps() {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found");
+    }
+
+    const response = await fetch(`${API_BASE_URL}/modality-steps/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch modality steps: ${response.status}`);
+    }
+
+    const modalitySteps = await response.json();
+    console.log("📋 Modality Steps loaded:", modalitySteps);
+    return modalitySteps;
+  } catch (error) {
+    console.error("❌ Error loading modality steps:", error);
+    return [];
+  }
+}
 async function loadAddSessionDynamicFields(emrTypeId) {
   const container = document.getElementById(
     "add-session-dynamic-fields-container"
@@ -6314,11 +6485,11 @@ async function loadAddSessionDynamicFields(emrTypeId) {
     const dynamicFields = await getSessionDetailFields(emrTypeId);
     console.log("📋 Dynamic fields for new session:", dynamicFields);
 
-    if (
-      !dynamicFields ||
-      !dynamicFields.confirmedResults ||
-      dynamicFields.confirmedResults.length === 0
-    ) {
+    // Check if there are any fields available (confirmed results OR manual fields)
+    const hasConfirmedResults = dynamicFields && dynamicFields.confirmedResults && dynamicFields.confirmedResults.length > 0;
+    const hasManualFields = dynamicFields && dynamicFields.manualFields && dynamicFields.manualFields.length > 0;
+    
+    if (!hasConfirmedResults && !hasManualFields) {
       container.innerHTML = "<p>No fields available for this session type.</p>";
       return;
     }
@@ -6327,7 +6498,8 @@ async function loadAddSessionDynamicFields(emrTypeId) {
     container.innerHTML = "";
 
     // Create EMPTY form fields for each dynamic field (for creating new session)
-    dynamicFields.confirmedResults.forEach((result) => {
+    if (hasConfirmedResults) {
+      dynamicFields.confirmedResults.forEach((result) => {
       // Skip "client" or "client name" field as it's already shown as a static field at the top
       const keyLower = result.key ? result.key.toLowerCase().trim() : "";
       if (keyLower === "client" || keyLower === "client name") {
@@ -6440,9 +6612,535 @@ async function loadAddSessionDynamicFields(emrTypeId) {
         container.appendChild(fieldContainer);
       }
     });
+    }
+
+    // Add static Modality and Modality Steps dropdowns (always shown)
+    const modalities = await fetchModalities();
+    const modalitySteps = await fetchModalitySteps();
+    
+    // Find the Modality field in EMR Type Fields to get the correct api_name
+    const modalityEmrField = dynamicFields.fields.find(
+      (field) => field.name && field.name.toLowerCase().trim() === "modality"
+    );
+    const modalityApiName = modalityEmrField ? modalityEmrField.api_name : "modality";
+    
+    // Find the Modality Steps field in EMR Type Fields to get the correct api_name
+    const modalityStepsEmrField = dynamicFields.fields.find(
+      (field) => field.name && field.name.toLowerCase().replace(/\s+/g, " ").trim() === "modality steps"
+    );
+    const modalityStepsApiName = modalityStepsEmrField ? modalityStepsEmrField.api_name : "modality_steps";
+    
+    console.log("🔍 Modality API names:", { modalityApiName, modalityStepsApiName });
+    
+    // Create Modality dropdown
+    const modalityContainer = document.createElement("div");
+    modalityContainer.className = "form-group";
+    
+    const modalityLabel = document.createElement("label");
+    modalityLabel.textContent = "Modality";
+    modalityLabel.setAttribute("for", "new-modality");
+    
+    const modalitySelect = document.createElement("select");
+    modalitySelect.className = "form-input";
+    modalitySelect.name = modalityApiName;  // Use api_name from EMR Type Fields
+    modalitySelect.id = "new-modality";
+    
+    // Add empty option
+    const emptyModalityOption = document.createElement("option");
+    emptyModalityOption.value = "";
+    emptyModalityOption.textContent = "Select Modality";
+    modalitySelect.appendChild(emptyModalityOption);
+    
+    // Add modality options
+    modalities.forEach((modality) => {
+      const option = document.createElement("option");
+      option.value = modality.id || modality.name;
+      option.textContent = modality.name;
+      modalitySelect.appendChild(option);
+    });
+    
+    modalityContainer.appendChild(modalityLabel);
+    modalityContainer.appendChild(modalitySelect);
+    container.appendChild(modalityContainer);
+    
+    // Add event listener to Modality dropdown to filter Modality Steps
+    modalitySelect.addEventListener("change", function() {
+      const selectedModalityId = this.value;
+      
+      // Clear current options except the first empty option
+      modalityStepsSelect.innerHTML = "";
+      const emptyOption = document.createElement("option");
+      emptyOption.value = "";
+      emptyOption.textContent = "Select Modality Steps";
+      modalityStepsSelect.appendChild(emptyOption);
+      
+      if (selectedModalityId) {
+        // Filter modality steps by modality_id
+        const filteredSteps = modalitySteps.filter(step => 
+          step.modality_id === selectedModalityId || step.modality_id == selectedModalityId
+        );
+        
+        console.log("🔍 Filtered modality steps for modality ID:", selectedModalityId, filteredSteps);
+        
+        // Add filtered options
+        filteredSteps.forEach((step) => {
+          const option = document.createElement("option");
+          option.value = step.id || step.name;
+          option.textContent = step.name;
+          modalityStepsSelect.appendChild(option);
+        });
+      }
+    });
+    
+    // Create Modality Steps dropdown
+    const modalityStepsContainer = document.createElement("div");
+    modalityStepsContainer.className = "form-group";
+    
+    const modalityStepsLabel = document.createElement("label");
+    modalityStepsLabel.textContent = "Modality Steps";
+    modalityStepsLabel.setAttribute("for", "new-modality-steps");
+    
+    const modalityStepsSelect = document.createElement("select");
+    modalityStepsSelect.className = "form-input";
+    modalityStepsSelect.name = modalityStepsApiName;
+    modalityStepsSelect.id = "new-modality-steps";
+    
+    // Add empty option
+    const emptyStepsOption = document.createElement("option");
+    emptyStepsOption.value = "";
+    emptyStepsOption.textContent = "Select Modality Steps";
+    modalityStepsSelect.appendChild(emptyStepsOption);
+    
+    // Add modality steps options
+    modalitySteps.forEach((step) => {
+      const option = document.createElement("option");
+      option.value = step.id || step.name;
+      option.textContent = step.name;
+      modalityStepsSelect.appendChild(option);
+    });
+    
+    modalityStepsContainer.appendChild(modalityStepsLabel);
+    modalityStepsContainer.appendChild(modalityStepsSelect);
+    container.appendChild(modalityStepsContainer);
+
+    // ALSO create form fields for manual fields
+    console.log("📋 Manual fields for EMR type:", dynamicFields.manualFields);
+    if (dynamicFields.manualFields && dynamicFields.manualFields.length > 0) {
+      dynamicFields.manualFields.forEach((manualField) => {
+        // Skip client field
+        const keyLower = manualField.name ? manualField.name.toLowerCase().trim() : "";
+        if (keyLower === "client" || keyLower === "client_id" || keyLower === "client id") {
+          console.log(
+            "⏭️ Skipping client manual field - already shown as static field:",
+            manualField.name
+          );
+          return;
+        }
+
+        // Match manual field with EMR Type Fields to get correct type and dropdown values
+        let emrField = dynamicFields.fields.find(
+          (field) => field.name === manualField.name
+        );
+
+        // Try case-insensitive matching if exact match not found
+        if (!emrField) {
+          emrField = dynamicFields.fields.find((field) => {
+            if (!field.name) return false;
+            const normalizedFieldName = field.name
+              .toLowerCase()
+              .replace(/-/g, " ")
+              .replace(/_/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+            const normalizedManualFieldName = manualField.name
+              .toLowerCase()
+              .replace(/-/g, " ")
+              .replace(/_/g, " ")
+              .replace(/\s+/g, " ")
+              .trim();
+            return normalizedFieldName === normalizedManualFieldName;
+          });
+        }
+
+        console.log("📋 Manual field matching:", {
+          manualFieldName: manualField.name,
+          emrFieldFound: !!emrField,
+          emrFieldName: emrField?.name,
+          emrFieldType: emrField?.type
+        });
+
+        // Use EMR field type if found, otherwise fallback to manual field type
+        const fieldType = emrField ? emrField.type : (manualField.type || "text");
+        const fieldName = emrField ? emrField.api_name : (manualField.api_name || manualField.name);
+
+        if (fieldName) {
+          const fieldContainer = document.createElement("div");
+          fieldContainer.className = "form-group";
+
+          const label = document.createElement("label");
+          label.textContent = manualField.name;
+          label.setAttribute(
+            "for",
+            `new-${manualField.name.replace(/\s+/g, "-").toLowerCase()}`
+          );
+
+          let input;
+
+          if (fieldType === "date") {
+            input = document.createElement("input");
+            input.type = "date";
+          } else if (fieldType === "datetime") {
+            input = document.createElement("input");
+            input.type = "datetime-local";
+          } else if (fieldType === "boolean") {
+            input = document.createElement("input");
+            input.type = "checkbox";
+          } else if (fieldType === "dropdown") {
+            input = document.createElement("select");
+            // Use EMR field dropdown values if available, otherwise fallback to manual field
+            const dropdownValues = emrField?.dropdown_values || manualField.dropdown_values;
+            if (dropdownValues) {
+              const options = dropdownValues
+                .split("\n")
+                .filter((option) => option.trim());
+              options.forEach((option) => {
+                const optionElement = document.createElement("option");
+                optionElement.value = option.trim();
+                optionElement.textContent = option.trim();
+                input.appendChild(optionElement);
+              });
+            }
+          } else if (fieldType === "textarea") {
+            input = document.createElement("textarea");
+            input.rows = 3;
+          } else if (fieldType === "number") {
+            input = document.createElement("input");
+            input.type = "number";
+          } else if (fieldType === "email") {
+            input = document.createElement("input");
+            input.type = "email";
+          } else if (fieldType === "tel") {
+            input = document.createElement("input");
+            input.type = "tel";
+          } else {
+            input = document.createElement("input");
+            input.type = "text";
+          }
+
+          input.className = "form-input";
+          input.name = fieldName;
+          input.id = `new-${manualField.name.replace(/\s+/g, "-").toLowerCase()}`;
+
+          fieldContainer.appendChild(label);
+          fieldContainer.appendChild(input);
+          container.appendChild(fieldContainer);
+        }
+      });
+    }
+    
   } catch (error) {
     console.error("❌ Error loading dynamic fields:", error);
     container.innerHTML = "<p>Error loading fields. Please try again.</p>";
+  }
+}
+
+// Find or create client by name
+async function findOrCreateClient(clientName, accessToken) {
+  try {
+    console.log("🔍 Looking for client:", clientName);
+    
+    const response = await fetch(`${API_BASE_URL}/api/Clients`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      throw new Error("Unauthorized");
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch clients: ${response.status}`);
+    }
+
+    const clients = await response.json();
+    
+    const nameParts = clientName.trim().split(" ");
+    const firstName = nameParts[0] || "";
+    const lastName = nameParts.slice(1).join(" ") || "";
+
+    const matchingClient = clients.find((client) => {
+      const clientFullName = `${client.first_name || ""} ${client.last_name || ""}`.trim();
+      return clientFullName.toLowerCase() === clientName.toLowerCase().trim();
+    });
+
+    if (matchingClient) {
+      console.log("✅ Found existing client:", matchingClient);
+      return matchingClient.id || matchingClient.client_id;
+    }
+
+    console.log("📝 Creating new client:", { firstName, lastName });
+    
+    const today = new Date();
+    const randomDOB = new Date(today.getFullYear() - 25, today.getMonth(), today.getDate());
+    const dobString = randomDOB.toISOString().split("T")[0];
+
+    const createResponse = await fetch(`${API_BASE_URL}/api/Clients`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        first_name: firstName,
+        last_name: lastName,
+        date_of_birth: dobString,
+      }),
+    });
+
+    if (!createResponse.ok) {
+      const errorData = await createResponse.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to create client`);
+    }
+
+    const newClient = await createResponse.json();
+    console.log("✅ Created new client:", newClient);
+    
+    return newClient.id || newClient.client_id;
+  } catch (error) {
+    console.error("❌ Error in findOrCreateClient:", error);
+    throw error;
+  }
+}
+
+// Find or create/update session
+async function findOrCreateSession(clientId, emrTypeId, sessionData, accessToken) {
+  try {
+    console.log("🔍 Looking for session with client:", clientId, "emr_type:", emrTypeId);
+    
+    const response = await fetch(`${API_BASE_URL}/sessions?client_id=${clientId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.status === 401) {
+      handle401Error();
+      throw new Error("Unauthorized");
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch sessions: ${response.status}`);
+    }
+
+    const sessions = await response.json();
+
+    const matchingSession = sessions.find(
+      (session) => session.emr_type_id === emrTypeId || session.emr_type_id == emrTypeId
+    );
+
+    if (matchingSession) {
+      console.log("✅ Found existing session, updating:", matchingSession.id);
+      
+      const updateResponse = await fetch(`${API_BASE_URL}/sessions/${matchingSession.id}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(sessionData),
+      });
+
+      if (!updateResponse.ok) {
+        const errorData = await updateResponse.json().catch(() => ({}));
+        throw new Error(errorData.message || `Failed to update session`);
+      }
+
+      await updateResponse.json();
+      return matchingSession.id;
+    }
+
+    console.log("📝 Creating new session");
+    
+    const createResponse = await fetch(`${API_BASE_URL}/sessions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(sessionData),
+    });
+
+    if (!createResponse.ok) {
+      const errorData = await createResponse.json().catch(() => ({}));
+      throw new Error(errorData.message || `Failed to create session`);
+    }
+
+    const newSession = await createResponse.json();
+    console.log("✅ Created new session:", newSession);
+    
+    return newSession.id;
+  } catch (error) {
+    console.error("❌ Error in findOrCreateSession:", error);
+    throw error;
+  }
+}
+
+// Main handler for Generate AI Notes from detected session
+async function handleGenerateAINotesFromDetected() {
+  console.log("🚀 Function called!");
+  console.log("🔍 currentAutoDetectedScrapedData:", currentAutoDetectedScrapedData);
+  console.log("🔍 currentAutoDetectedEmrTypeId:", currentAutoDetectedEmrTypeId);
+  
+  const generateButton = document.getElementById("auto-generate-button");
+  
+  try {
+    console.log("🚀 Starting AI Notes generation from detected session...");
+
+    if (generateButton) {
+      generateButton.disabled = true;
+      generateButton.textContent = "Generating AI Notes...";
+    }
+
+    const tokenResult = await chrome.storage.local.get(["accessToken"]);
+    if (!tokenResult.accessToken) {
+      showErrorMessage("Please log in again");
+      return;
+    }
+
+    if (!currentAutoDetectedScrapedData || !currentAutoDetectedDynamicFields) {
+      showErrorMessage("No detected session data found");
+      return;
+    }
+
+    const scrapedData = currentAutoDetectedScrapedData;
+    
+    const clientName = scrapedData.Client || scrapedData.client;
+    if (!clientName) {
+      showErrorMessage("Client name not found");
+      return;
+    }
+
+    const clientId = await findOrCreateClient(clientName, tokenResult.accessToken);
+
+    const emrTypeId = currentAutoDetectedEmrTypeId;
+    console.log("🔍 DEBUG emrTypeId:", emrTypeId, typeof emrTypeId);
+    console.log("🔍 DEBUG scrapedData:", scrapedData);
+    if (!emrTypeId) {
+      showErrorMessage("EMR Type not found");
+      return;
+    }
+
+    const sessionData = {
+      client_id: clientId,
+      emr_type_id: emrTypeId,
+      manual_instructions: scrapedData.Instructions || scrapedData.instructions || "",
+    };
+
+    Object.keys(scrapedData).forEach((key) => {
+      if (!["Client", "client", "emr_type_id", "Instructions", "instructions"].includes(key)) {
+        sessionData[key] = scrapedData[key];
+      }
+    });
+
+    const sessionId = await findOrCreateSession(clientId, emrTypeId, sessionData, tokenResult.accessToken);
+    
+    const generateResponse = await fetch(`${API_BASE_URL}/sessions/${sessionId}/generate`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (generateResponse.status === 401) {
+      handle401Error();
+      return;
+    }
+
+    if (!generateResponse.ok) {
+      const errorData = await generateResponse.json().catch(() => ({}));
+      throw new Error(errorData.message || "Failed to generate AI notes");
+    }
+
+    await generateResponse.json();
+
+    // Step 5: Fetch session with AI notes
+    const sessionResponse = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!sessionResponse.ok) {
+      throw new Error("Failed to fetch session");
+    }
+
+    const sessionDetails = await sessionResponse.json();
+
+    // Step 6: Fetch dynamic fields
+    let dynamicFields = null;
+    if (sessionDetails.emr_type_id) {
+      try {
+        dynamicFields = await getSessionDetailFields(sessionDetails.emr_type_id);
+      } catch (error) {
+        console.error("❌ Error loading dynamic fields:", error);
+      }
+    }
+    
+    // Store and redirect
+    chrome.storage.local.set({ currentSession: sessionDetails }, () => {
+      navigateToPage("session-detail");
+      
+      // Wait for page to load, then populate and switch to AI Notes tab
+      setTimeout(() => {
+        // Update the page with session data (AFTER navigation)
+        updateSessionDetailPage(sessionDetails, dynamicFields);
+        
+        // Setup the tab handlers
+        setupSessionTabHandlers();
+        
+        const sessionInfoTab = document.getElementById("session-info-tab");
+        const activityTab = document.getElementById("session-activity-tab");
+        const sessionInfoContent = document.getElementById("session-info-content");
+        const activityContent = document.getElementById("session-activity-content");
+        
+        if (sessionInfoTab && activityTab && sessionInfoContent && activityContent) {
+          // Remove active from Session Info
+          sessionInfoTab.classList.remove("active");
+          sessionInfoContent.classList.remove("active");
+          // Add active to AI Notes
+          activityTab.classList.add("active");
+          activityContent.classList.add("active");
+          
+          // Hide session details for AI Notes tab
+          hideSessionDetailsForAINotes();
+          
+          // Update buttons to hide edit button for AI Notes tab
+          updateSessionButtons("ai-notes");
+          
+          console.log("✅ Switched to AI Notes tab!");
+        }
+
+        showSuccessMessage("AI Notes generated successfully!");
+      }, 300);
+    });
+
+  } catch (error) {
+    console.error("❌ Error:", error);
+    showErrorMessage(`Failed: ${error.message}`);
+  } finally {
+    if (generateButton) {
+      generateButton.disabled = false;
+      generateButton.textContent = "Generate AI Notes";
+    }
   }
 }
 
@@ -7131,6 +7829,16 @@ async function loadSessionDynamicFields(sessionData) {
 
     // Create form fields for each dynamic field (confirmed results)
     dynamicFields.confirmedResults.forEach((result) => {
+      // Skip "client" or "client name" field as it's already shown as a static field at the top
+      const keyLower = result.key ? result.key.toLowerCase().trim() : "";
+      if (keyLower === "client" || keyLower === "client name" || keyLower === "client_id" || keyLower === "client id") {
+        console.log(
+          "⏭️ Skipping client field in edit mode - already shown as static field:",
+          result.key
+        );
+        return;
+      }
+
       // Get the field type from EMR type fields table instead of using result.type
       // Try exact match first
       let emrField = dynamicFields.fields.find(
@@ -7503,7 +8211,130 @@ async function loadSessionDynamicFields(sessionData) {
         }
       }
     });
-
+    // Add static Modality and Modality Steps dropdowns (always shown)
+    const modalities = await fetchModalities();
+    const modalitySteps = await fetchModalitySteps();
+    
+    // Find the Modality and Modality Steps field definitions to get api_name
+    const modalityField = dynamicFields.fields.find(
+      (f) => f.name && f.name.toLowerCase().includes("modality") && !f.name.toLowerCase().includes("step")
+    );
+    const modalityStepsField = dynamicFields.fields.find(
+      (f) => f.name && f.name.toLowerCase().includes("modality") && f.name.toLowerCase().includes("step")
+    );
+    
+    const modalityApiName = modalityField ? modalityField.api_name : "modality";
+    const modalityStepsApiName = modalityStepsField ? modalityStepsField.api_name : "modality_steps";
+    
+    console.log("🔍 Modality api_name:", modalityApiName);
+    console.log("🔍 Modality Steps api_name:", modalityStepsApiName);
+    console.log("🔍 Session modality value:", sessionData[modalityApiName]);
+    console.log("🔍 Session modality_steps value:", sessionData[modalityStepsApiName]);
+    
+    // Create Modality dropdown
+    const modalityContainer = document.createElement("div");
+    modalityContainer.className = "form-group";
+    
+    const modalityLabel = document.createElement("label");
+    modalityLabel.textContent = "Modality";
+    modalityLabel.setAttribute("for", "edit-modality");
+    
+    const modalitySelect = document.createElement("select");
+    modalitySelect.className = "form-input";
+    modalitySelect.name = modalityApiName;
+    modalitySelect.id = "edit-modality";
+    
+    // Add empty option
+    const emptyModalityOption = document.createElement("option");
+    emptyModalityOption.value = "";
+    emptyModalityOption.textContent = "Select Modality";
+    modalitySelect.appendChild(emptyModalityOption);
+    
+    // Add modality options
+    modalities.forEach((modality) => {
+      const option = document.createElement("option");
+      option.value = modality.id || modality.name;
+      option.textContent = modality.name;
+      // Pre-select if session has modality value using api_name
+      if (sessionData[modalityApiName] && (sessionData[modalityApiName] == modality.id || sessionData[modalityApiName] == modality.name)) {
+        option.selected = true;
+      }
+      modalitySelect.appendChild(option);
+    });
+    
+    modalityContainer.appendChild(modalityLabel);
+    modalityContainer.appendChild(modalitySelect);
+    container.appendChild(modalityContainer);
+    
+    // Create Modality Steps dropdown (initially empty or pre-filled)
+    const modalityStepsContainer = document.createElement("div");
+    modalityStepsContainer.className = "form-group";
+    
+    const modalityStepsLabel = document.createElement("label");
+    modalityStepsLabel.textContent = "Modality Steps";
+    modalityStepsLabel.setAttribute("for", "edit-modality-steps");
+    
+    const modalityStepsSelect = document.createElement("select");
+    modalityStepsSelect.className = "form-input";
+    modalityStepsSelect.name = modalityStepsApiName;
+    modalityStepsSelect.id = "edit-modality-steps";
+    
+    // Start with empty option
+    const emptyStepsOption = document.createElement("option");
+    emptyStepsOption.value = "";
+    emptyStepsOption.textContent = "Select Modality Steps";
+    modalityStepsSelect.appendChild(emptyStepsOption);
+    
+    // If session has modality selected, filter and show steps
+    if (sessionData[modalityApiName]) {
+      const filteredSteps = modalitySteps.filter(step => 
+        step.modality_id === sessionData[modalityApiName] || step.modality_id == sessionData[modalityApiName]
+      );
+      
+      filteredSteps.forEach((step) => {
+        const option = document.createElement("option");
+        option.value = step.id || step.name;
+        option.textContent = step.name;
+        // Pre-select if session has modality_steps value
+        if (sessionData.modality_steps && (sessionData.modality_steps == step.id || sessionData.modality_steps == step.name)) {
+          option.selected = true;
+        }
+        modalityStepsSelect.appendChild(option);
+      });
+    }
+    
+    modalityStepsContainer.appendChild(modalityStepsLabel);
+    modalityStepsContainer.appendChild(modalityStepsSelect);
+    container.appendChild(modalityStepsContainer);
+    
+    // Add event listener to Modality dropdown to filter Modality Steps
+    modalitySelect.addEventListener("change", function() {
+      const selectedModalityId = this.value;
+      
+      // Clear current options
+      modalityStepsSelect.innerHTML = "";
+      const emptyOption = document.createElement("option");
+      emptyOption.value = "";
+      emptyOption.textContent = "Select Modality Steps";
+      modalityStepsSelect.appendChild(emptyOption);
+      
+      if (selectedModalityId) {
+        // Filter modality steps by modality_id
+        const filteredSteps = modalitySteps.filter(step => 
+          step.modality_id === selectedModalityId || step.modality_id == selectedModalityId
+        );
+        
+        console.log("🔍 Filtered modality steps for modality ID:", selectedModalityId, filteredSteps);
+        
+        // Add filtered options
+        filteredSteps.forEach((step) => {
+          const option = document.createElement("option");
+          option.value = step.id || step.name;
+          option.textContent = step.name;
+          modalityStepsSelect.appendChild(option);
+        });
+      }
+    });
     // Process manual fields - also use EMR field types for consistency
     console.log("🔍 Processing manual fields:", dynamicFields.manualFields);
     dynamicFields.manualFields.forEach((manualField) => {
@@ -9188,9 +10019,9 @@ async function autoFillSessionFromScrapedData(data) {
   });
 }
 
-// Global variables to store field data for edit mode
 let currentAutoDetectedDynamicFields = null;
 let currentAutoDetectedScrapedData = null;
+let currentAutoDetectedEmrTypeId = null;  // ADD THIS LINE
 
 // Global variables to store modalities and modality steps
 let allModalities = [];
@@ -9221,6 +10052,7 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
     // Store globally for edit mode access
     currentAutoDetectedDynamicFields = dynamicFields;
     currentAutoDetectedScrapedData = scrapedData;
+    currentAutoDetectedEmrTypeId = emrTypeId;  // ADD THIS LINE
 
     // Populate static fields (Client, Type, Instructions) with tooltips
     const autoClientEl = document.getElementById("auto-client");
