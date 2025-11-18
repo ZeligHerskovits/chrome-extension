@@ -2042,12 +2042,14 @@ select.edit-input {
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   padding: 24px;
+  padding-bottom: 24px; /* Ensure bottom padding to prevent cropping */
   margin-bottom: 20px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 20px;
   row-gap: 20px;
+  overflow: visible; /* Allow content to be fully visible */
 }
 
 #auto-session-detail-card .card-title {
@@ -2061,13 +2063,23 @@ select.edit-input {
 /* Make sure all dynamic fields appear inside the white card */
 /* No extra styling needed - they inherit from parent card */
 
-/* Truncate long text in auto-detected session fields */
-#auto-session-detail-card .detail-value {
+/* Truncate long text in auto-detected session fields - but not for inputs/textarea */
+#auto-session-detail-card
+  .detail-value:not(:has(input)):not(:has(textarea)):not(:has(select)) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
   cursor: help; /* Show help cursor for truncated text */
+}
+
+/* Allow inputs/textarea to display fully without truncation */
+#auto-session-detail-card .detail-value:has(input),
+#auto-session-detail-card .detail-value:has(textarea),
+#auto-session-detail-card .detail-value:has(select) {
+  overflow: visible;
+  text-overflow: initial;
+  white-space: normal;
 }
 
 /* Show tooltip on hover for truncated text */
@@ -2092,11 +2104,137 @@ select.edit-input {
   font-family: inherit;
 }
 
-#auto-session-detail-card .detail-value input:hover,
-#auto-session-detail-card .detail-value textarea:hover,
-#auto-session-detail-card .detail-value select:hover,
-.editable-input:hover {
+/* Add dropdown arrow to all select elements in auto-detected session */
+#auto-session-detail-card .detail-value select,
+#auto-session-detail-card select,
+select.editable-input,
+.editable-input[data-field-type="dropdown"] {
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 12px center !important;
+  background-size: 16px !important;
+  padding-right: 40px !important;
+}
+
+/* Dropdown arrow for disabled selects */
+#auto-session-detail-card .detail-value select:disabled,
+#auto-session-detail-card select:disabled,
+select.editable-input:disabled,
+.editable-input[data-field-type="dropdown"]:disabled {
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e") !important;
+}
+
+/* Style for disabled input fields in view mode - gray background */
+#auto-session-detail-card .detail-value input:disabled,
+#auto-session-detail-card .detail-value textarea:disabled,
+#auto-session-detail-card .detail-value select:disabled,
+.editable-input:disabled {
+  background-color: #f9fafb !important;
+  color: #111827;
+  cursor: not-allowed;
+  opacity: 1;
+  border-color: #e5e7eb !important; /* Ensure no red border on disabled fields */
+  box-shadow: none !important; /* Remove any validation box-shadow */
+}
+
+/* Ensure disabled selects still show the dropdown arrow */
+#auto-session-detail-card .detail-value select:disabled {
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 12px center !important;
+  background-size: 16px !important;
+  padding-right: 40px !important;
+}
+
+/* Remove validation styling from disabled inputs */
+#auto-session-detail-card .detail-value input:disabled:invalid,
+#auto-session-detail-card .detail-value textarea:disabled:invalid,
+#auto-session-detail-card .detail-value select:disabled:invalid {
+  border-color: #e5e7eb !important;
+  box-shadow: none !important;
+}
+
+/* Remove ALL validation indicators and tooltips for ALL inputs in list view */
+/* IMPORTANT: do NOT remove native appearance from checkboxes, or they won’t show checked/unchecked state */
+#auto-session-detail-card .detail-value input:not([type="checkbox"]),
+#auto-session-detail-card .detail-value textarea,
+#auto-session-detail-card .detail-value select,
+.editable-input:not([type="checkbox"]) {
+  /* Disable browser validation styling for text-like controls */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+
+/* Remove validation tooltip/ball on hover for all inputs (except checkboxes) */
+#auto-session-detail-card .detail-value input:not([type="checkbox"]):invalid,
+#auto-session-detail-card .detail-value textarea:invalid,
+#auto-session-detail-card .detail-value select:invalid,
+.editable-input:not([type="checkbox"]):invalid {
+  border-color: #e5e7eb !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Remove validation tooltip/ball on hover for disabled inputs (except checkboxes) */
+#auto-session-detail-card
+  .detail-value
+  input:not([type="checkbox"]):disabled:invalid:hover,
+#auto-session-detail-card .detail-value textarea:disabled:invalid:hover,
+#auto-session-detail-card .detail-value select:disabled:invalid:hover,
+.editable-input:not([type="checkbox"]):disabled:invalid:hover {
+  border-color: #e5e7eb !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Prevent browser validation tooltip/bubble from appearing - comprehensive approach */
+#auto-session-detail-card .detail-value input,
+#auto-session-detail-card .detail-value textarea,
+#auto-session-detail-card .detail-value select {
+  /* Prevent validation tooltip on hover */
+  pointer-events: auto;
+}
+
+#auto-session-detail-card .detail-value input:disabled,
+#auto-session-detail-card .detail-value textarea:disabled,
+#auto-session-detail-card .detail-value select:disabled {
+  /* Disabled inputs should not show validation at all */
+  pointer-events: none;
+}
+
+/* Hide validation messages completely */
+#auto-session-detail-card .detail-value input::-webkit-validation-bubble,
+#auto-session-detail-card .detail-value textarea::-webkit-validation-bubble,
+#auto-session-detail-card .detail-value select::-webkit-validation-bubble,
+#auto-session-detail-card
+  .detail-value
+  input::-webkit-validation-bubble-message,
+#auto-session-detail-card
+  .detail-value
+  textarea::-webkit-validation-bubble-message,
+#auto-session-detail-card
+  .detail-value
+  select::-webkit-validation-bubble-message {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+}
+
+#auto-session-detail-card .detail-value input:hover:not(:disabled),
+#auto-session-detail-card .detail-value textarea:hover:not(:disabled),
+#auto-session-detail-card .detail-value select:hover:not(:disabled),
+.editable-input:hover:not(:disabled) {
   border-color: #d1d5db;
+}
+
+/* Disabled inputs should not show hover effects */
+#auto-session-detail-card .detail-value input:disabled:hover,
+#auto-session-detail-card .detail-value textarea:disabled:hover,
+#auto-session-detail-card .detail-value select:disabled:hover,
+.editable-input:disabled:hover {
+  border-color: #e5e7eb;
+  cursor: not-allowed;
 }
 
 #auto-session-detail-card .detail-value input:focus,
@@ -2170,10 +2308,12 @@ select.edit-input {
   grid-column: 1 / -1; /* Span full width */
   border-top: 2px solid #e5e7eb;
   padding-top: 20px;
+  padding-bottom: 20px; /* Add bottom padding to prevent cropping */
   margin-top: 4px;
   display: flex;
   flex-direction: column;
   gap: 20px;
+  overflow: visible; /* Allow content to be fully visible */
 }
 
 /* Individual session detail item - vertical layout (label on top) */
@@ -2184,6 +2324,13 @@ select.edit-input {
   padding: 12px 0;
   border-bottom: none;
   min-width: 0; /* Allow grid items to shrink */
+  width: 100%; /* Ensure full width */
+}
+
+/* View mode fields should span full width */
+#auto-session-detail-card .session-detail-item.view-mode,
+#auto-session-detail-card .session-detail-item.dynamic-field {
+  grid-column: 1 / -1; /* Span all columns - full width */
 }
 
 /* Label on top - nicer styling */
@@ -2206,6 +2353,7 @@ select.edit-input {
   word-wrap: break-word;
   line-height: 1.5;
   min-height: 20px;
+  pointer-events: auto; /* Ensure detail-value doesn't block checkbox clicks */
 }
 
 /* Empty values styling */
@@ -2237,6 +2385,38 @@ select.edit-input {
   height: 18px;
   cursor: pointer;
   accent-color: #298997;
+  pointer-events: auto !important; /* Ensure checkboxes are clickable */
+}
+
+/* Ensure checkboxes in edit mode are clickable */
+#auto-session-detail-card
+  .session-detail-item.editable-field
+  .detail-value
+  input[type="checkbox"]:not(:disabled) {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  z-index: 999 !important;
+  position: relative !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Ensure checkbox container doesn't block clicks */
+#auto-session-detail-card
+  .session-detail-item.editable-field
+  .detail-value:has(input[type="checkbox"]:not(:disabled)) {
+  pointer-events: auto !important;
+  z-index: 999 !important;
+  position: relative !important;
+}
+
+/* Ensure editable-field container doesn't block checkbox clicks */
+#auto-session-detail-card
+  .session-detail-item.editable-field:has(
+    input[type="checkbox"]:not(:disabled)
+  ) {
+  pointer-events: auto !important;
+  z-index: auto !important;
 }
 
 .detail-value-with-badge {
@@ -2717,6 +2897,20 @@ select.edit-input {
   color: #666;
   flex: 1;
   word-wrap: break-word; /* Handle long text gracefully */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  cursor: default; /* Default cursor, will change to help only if truncated */
+}
+
+/* Show tooltip on hover for truncated text in session info */
+#session-info-content .detail-value.is-truncated {
+  cursor: help;
+}
+
+#session-info-content .detail-value.is-truncated:hover {
+  cursor: help;
 }
 
 /* Form Fields Styling */
@@ -2768,10 +2962,60 @@ select.edit-input {
   transition: all 0.2s;
   text-align: center;
   width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .generate-ai-notes-button:hover {
   background-color: #1e6b73;
+}
+
+/* Re-generate button (if used) should match generate button styling */
+.re-generate-button {
+  background-color: #298997;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: center;
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.re-generate-button:hover {
+  background-color: #1e6b73;
+}
+
+/* Spinner shown inside generate / re-generate buttons while loading */
+.generate-ai-notes-button .button-spinner,
+.re-generate-button .button-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  border-top-color: #ffffff;
+  animation: button-spin 0.6s linear infinite;
+}
+
+.generate-ai-notes-button:disabled,
+.re-generate-button:disabled {
+  opacity: 0.85;
+  cursor: default;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .client-detected-banner {
   background-color: #e8f5e9;

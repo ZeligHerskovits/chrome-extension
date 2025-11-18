@@ -778,12 +778,36 @@ async function switchAutoDetectedSessionToEditMode() {
     if (container && valueElement) {
       const currentValue = valueElement.textContent;
 
-      // Replace with input field
+      // Replace with input field (or textarea for Instructions)
       const label = container.querySelector(".detail-label");
       const detailValue = container.querySelector(".detail-value");
 
       if (label && detailValue) {
-        detailValue.innerHTML = `<input type="text" value="${currentValue}" data-field-name="${field.fieldName}" class="editable-input">`;
+        // Instructions always shows as textarea (big box)
+        if (field.fieldName === "Instructions") {
+          // Escape HTML entities for textarea content
+          const escapedValue = currentValue
+            ? String(currentValue)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;")
+            : "";
+          // Instructions in edit mode: scrollable if long text
+          detailValue.innerHTML = `<textarea data-field-name="${field.fieldName}" class="editable-input" rows="3" style="width: 100%; min-height: 60px; max-height: 200px; resize: vertical; overflow-y: auto;">${escapedValue}</textarea>`;
+        } else {
+          // Escape HTML entities for input value
+          const escapedValue = currentValue
+            ? String(currentValue)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#39;")
+            : "";
+          detailValue.innerHTML = `<input type="text" value="${escapedValue}" data-field-name="${field.fieldName}" class="editable-input">`;
+        }
       }
     }
   });
@@ -856,12 +880,92 @@ async function switchAutoDetectedSessionToEditMode() {
           apiName = fieldDef.api_name;
         }
 
-        // Get current value: prefer existing view value, then scraped data, then empty
+        // Get current value: for date/datetime fields, prefer original scraped data value
+        // to avoid formatting issues (view mode shows formatted dates like "10/6/13")
         let fieldValue = "";
-        if (existingValues.hasOwnProperty(result.key)) {
-          fieldValue = existingValues[result.key];
-        } else if (apiName && scrapedData.hasOwnProperty(apiName)) {
-          fieldValue = scrapedData[apiName];
+        if (fieldDef.type === "date" || fieldDef.type === "datetime") {
+          // For date/datetime fields, prefer original value from scrapedData
+          if (apiName && scrapedData.hasOwnProperty(apiName)) {
+            fieldValue = scrapedData[apiName];
+            // Convert to proper format if needed
+            if (fieldDef.type === "date" && fieldValue) {
+              // Check if already in YYYY-MM-DD format (e.g., after saving)
+              const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+              if (dateRegex.test(fieldValue)) {
+                // Already in correct format, use as-is
+                // fieldValue is already correct
+              } else {
+                // Try to parse and format as YYYY-MM-DD
+                const parsedDate = parseDate(fieldValue);
+                if (parsedDate) {
+                  fieldValue = parsedDate;
+                } else {
+                  // If parseDate fails, try direct Date parsing
+                  try {
+                    const date = new Date(fieldValue);
+                    if (!isNaN(date.getTime())) {
+                      fieldValue = date.toISOString().split("T")[0];
+                    }
+                  } catch (e) {
+                    console.warn("Failed to parse date:", fieldValue);
+                  }
+                }
+              }
+            } else if (fieldDef.type === "datetime" && fieldValue) {
+              // Check if already in YYYY-MM-DDTHH:MM format (e.g., after saving)
+              const datetimeRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+              if (datetimeRegex.test(fieldValue)) {
+                // Already in correct format, use as-is
+                // fieldValue is already correct
+              } else {
+                // Try to parse and format as YYYY-MM-DDTHH:MM
+                const parsedDateTime = parseDateTime(fieldValue);
+                if (parsedDateTime) {
+                  fieldValue = parsedDateTime;
+                } else {
+                  // If parseDateTime fails, try direct Date parsing
+                  try {
+                    const date = new Date(fieldValue);
+                    if (!isNaN(date.getTime())) {
+                      const year = date.getFullYear();
+                      const month = String(date.getMonth() + 1).padStart(
+                        2,
+                        "0"
+                      );
+                      const day = String(date.getDate()).padStart(2, "0");
+                      const hours = String(date.getHours()).padStart(2, "0");
+                      const minutes = String(date.getMinutes()).padStart(
+                        2,
+                        "0"
+                      );
+                      fieldValue = `${year}-${month}-${day}T${hours}:${minutes}`;
+                    }
+                  } catch (e) {
+                    console.warn("Failed to parse datetime:", fieldValue);
+                  }
+                }
+              }
+            }
+          } else if (existingValues.hasOwnProperty(result.key)) {
+            // Fallback: try to parse the formatted date string from view mode
+            const formattedValue = existingValues[result.key];
+            if (fieldDef.type === "date") {
+              const parsedDate = parseDate(formattedValue);
+              fieldValue = parsedDate || formattedValue;
+            } else if (fieldDef.type === "datetime") {
+              const parsedDateTime = parseDateTime(formattedValue);
+              fieldValue = parsedDateTime || formattedValue;
+            } else {
+              fieldValue = formattedValue;
+            }
+          }
+        } else {
+          // For non-date fields, prefer existing view value, then scraped data
+          if (existingValues.hasOwnProperty(result.key)) {
+            fieldValue = existingValues[result.key];
+          } else if (apiName && scrapedData.hasOwnProperty(apiName)) {
+            fieldValue = scrapedData[apiName];
+          }
         }
 
         // Create editable field element with correct type from EMR type field
@@ -927,20 +1031,31 @@ function saveAutoDetectedSession() {
   const dynamicFields = currentAutoDetectedDynamicFields;
   const scrapedData = currentAutoDetectedScrapedData;
 
-  // Collect updated Instructions value
+  // Collect updated Instructions value (can be input or textarea)
   const instructionsInput = document.querySelector(
-    '#auto-instructions-container input[data-field-name="Instructions"]'
+    '#auto-instructions-container input[data-field-name="Instructions"], #auto-instructions-container textarea[data-field-name="Instructions"]'
   );
   if (instructionsInput) {
-    const newInstructions = instructionsInput.value;
+    const newInstructions =
+      instructionsInput.value || instructionsInput.textContent;
     scrapedData.Instructions = newInstructions;
     scrapedData.instructions = newInstructions;
 
-    // Update Instructions display with tooltip
-    const instructionsEl = document.getElementById("auto-instructions");
-    if (instructionsEl) {
-      instructionsEl.textContent = newInstructions;
-      instructionsEl.title = newInstructions; // Tooltip for full text
+    // Restore view-mode DOM for Instructions (plain text, no textarea)
+    const instructionsContainer = document.getElementById(
+      "auto-instructions-container"
+    );
+    if (instructionsContainer) {
+      const detailValue = instructionsContainer.querySelector(".detail-value");
+      if (detailValue) {
+        // Clear any edit-mode controls and recreate the span used in view mode
+        detailValue.innerHTML = "";
+        const span = document.createElement("span");
+        span.id = "auto-instructions";
+        span.textContent = newInstructions;
+        span.title = newInstructions; // Tooltip for full text
+        detailValue.appendChild(span);
+      }
     }
   }
 
@@ -981,7 +1096,7 @@ function saveAutoDetectedSession() {
       }
     });
 
-    // Clear and recreate confirmed results fields in view mode with truncation
+    // Clear and recreate confirmed results fields in view mode (plain text)
     confirmedContainer.innerHTML = "";
 
     dynamicFields.confirmedResults.forEach((result) => {
@@ -1026,8 +1141,8 @@ function saveAutoDetectedSession() {
             ? scrapedData[apiName]
             : "";
 
-        // Create view mode field with truncation
-        const fieldElement = createDynamicFieldElement(
+        // Create plain-text view field (same style as initial view mode)
+        const fieldElement = createAutoSessionViewFieldElement(
           result.key,
           fieldValue !== null && fieldValue !== undefined ? fieldValue : "",
           fieldDef.type
@@ -2453,6 +2568,33 @@ function showClientDetail(client) {
 
 async function showSessionDetail(session) {
   console.log("🚀 showSessionDetail called with session:", session);
+  console.log("🔍 Session emr_type_id:", session.emr_type_id);
+  console.log("🔍 Session emr_type_name:", session.emr_type_name);
+
+  // If session doesn't have emr_type_id or emr_type_name, fetch fresh from API
+  if (!session.emr_type_id && !session.emr_type_name && session.id) {
+    console.log(
+      "⚠️ Session missing emr_type_id/emr_type_name, fetching fresh from API..."
+    );
+    try {
+      const tokenResult = await chrome.storage.local.get(["accessToken"]);
+      if (tokenResult.accessToken) {
+        const response = await fetch(`${API_BASE_URL}/sessions/${session.id}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${tokenResult.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+        if (response.ok) {
+          session = await response.json();
+          console.log("✅ Fetched fresh session from API:", session);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error fetching fresh session:", error);
+    }
+  }
 
   // Store current session data
   chrome.storage.local.set({ currentSession: session }, function () {
@@ -2545,7 +2687,7 @@ function setupSessionTabHandlers() {
       "session-activity-tab"
     );
 
-    freshSessionInfoTab.addEventListener("click", function () {
+    freshSessionInfoTab.addEventListener("click", async function () {
       // Switch to Session Info tab
       freshSessionInfoTab.classList.add("active");
       freshSessionActivityTab.classList.remove("active");
@@ -2560,6 +2702,9 @@ function setupSessionTabHandlers() {
 
       // Check if AI notes exist and update button text accordingly
       checkAndUpdateAIButtonState();
+
+      // Reload session data to ensure all fields are properly displayed
+      await reloadSessionInfoData();
     });
 
     freshSessionActivityTab.addEventListener("click", function () {
@@ -2579,6 +2724,110 @@ function setupSessionTabHandlers() {
     console.log("✅ Session tab handlers set up");
   } else {
     console.error("❌ Session tab elements not found");
+  }
+}
+
+// Reload session info data when switching to Session Info tab
+async function reloadSessionInfoData() {
+  try {
+    console.log("🔄 Reloading session info data...");
+
+    // Get current session from storage
+    const sessionResult = await chrome.storage.local.get(["currentSession"]);
+    if (!sessionResult.currentSession || !sessionResult.currentSession.id) {
+      console.error("❌ No current session found in storage");
+      return;
+    }
+
+    let session = sessionResult.currentSession;
+    console.log("📋 Reloading session:", session.id);
+
+    // If session doesn't have emr_type_id or emr_type_name, fetch fresh from API
+    if (!session.emr_type_id && !session.emr_type_name) {
+      console.log(
+        "⚠️ Session missing emr_type_id/emr_type_name, fetching fresh from API..."
+      );
+      try {
+        const tokenResult = await chrome.storage.local.get(["accessToken"]);
+        if (tokenResult.accessToken) {
+          const response = await fetch(
+            `${API_BASE_URL}/sessions/${session.id}`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${tokenResult.accessToken}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+          if (response.ok) {
+            session = await response.json();
+            console.log("✅ Fetched fresh session from API:", session);
+            // Update stored session
+            chrome.storage.local.set({ currentSession: session });
+          }
+        }
+      } catch (error) {
+        console.error("❌ Error fetching fresh session:", error);
+      }
+    }
+
+    // Ensure client is stored in storage (needed for updateSessionDetailPage)
+    const clientResult = await chrome.storage.local.get(["currentClient"]);
+    if (!clientResult.currentClient && session.client_id) {
+      try {
+        console.log(
+          "🔄 Fetching client data for client_id:",
+          session.client_id
+        );
+        const tokenResult = await chrome.storage.local.get(["accessToken"]);
+        if (tokenResult.accessToken) {
+          const clientResponse = await fetch(
+            `${API_BASE_URL}/api/Clients/${session.client_id}`,
+            {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${tokenResult.accessToken}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+          if (clientResponse.ok) {
+            const client = await clientResponse.json();
+            chrome.storage.local.set({ currentClient: client });
+            console.log("✅ Client data stored:", client);
+          }
+        }
+      } catch (error) {
+        console.error("❌ Error fetching client:", error);
+      }
+    }
+
+    // Fetch dynamic fields if session has emr_type_id
+    let dynamicFields = null;
+    if (session.emr_type_id) {
+      try {
+        console.log(
+          "🔄 Fetching dynamic fields for emr_type_id:",
+          session.emr_type_id
+        );
+        dynamicFields = await getSessionDetailFields(session.emr_type_id);
+        console.log("📋 Dynamic fields loaded:", dynamicFields);
+      } catch (error) {
+        console.error("❌ Error loading dynamic fields:", error);
+      }
+    } else {
+      console.log(
+        "❌ No emr_type_id found in session, skipping dynamic fields"
+      );
+    }
+
+    // Update session detail page with fresh data
+    updateSessionDetailPage(session, dynamicFields);
+
+    console.log("✅ Session info data reloaded successfully");
+  } catch (error) {
+    console.error("❌ Error reloading session info data:", error);
   }
 }
 
@@ -2873,14 +3122,8 @@ async function regenerateAINotesWithFeedback(sessionId) {
       return;
     }
 
-    // Show loading state on generate button
-    const generateButtons = document.querySelectorAll(
-      ".generate-ai-notes-button, .re-generate-button"
-    );
-    generateButtons.forEach((button) => {
-      button.textContent = "Generating...";
-      button.disabled = true;
-    });
+    // Show loading state on generate button (with spinner)
+    setGenerateButtonsLoading("Generating...");
 
     // Call generate API (same as normal generation)
     const response = await fetch(
@@ -2909,10 +3152,7 @@ async function regenerateAINotesWithFeedback(sessionId) {
       await refreshSessionData(sessionId);
 
       // Reset button state
-      generateButtons.forEach((button) => {
-        button.disabled = false;
-        button.textContent = "Re-generate";
-      });
+      resetGenerateButtons("Re-generate");
 
       showFeedbackStatus("AI notes updated successfully!", "success");
       setTimeout(() => showFeedbackStatus("", ""), 3000);
@@ -2922,13 +3162,7 @@ async function regenerateAINotesWithFeedback(sessionId) {
     showFeedbackStatus(`Regeneration error: ${error.message}`, "error");
 
     // Reset button state on error
-    const generateButtons = document.querySelectorAll(
-      ".generate-ai-notes-button, .re-generate-button"
-    );
-    generateButtons.forEach((button) => {
-      button.disabled = false;
-      button.textContent = "Re-generate";
-    });
+    resetGenerateButtons("Re-generate");
   }
 }
 
@@ -2990,8 +3224,41 @@ function showFeedbackStatus(message, type) {
   }
 }
 
+// Helper function to check if text is truncated and set tooltip only if needed
+function checkAndSetTruncationTooltip(element, fullText) {
+  if (!element || !fullText) return;
+
+  // Use setTimeout to ensure element is rendered before checking
+  setTimeout(() => {
+    // Check if element is in the DOM
+    if (!element.isConnected) {
+      // Element not in DOM yet, try again after a short delay
+      setTimeout(() => checkAndSetTruncationTooltip(element, fullText), 50);
+      return;
+    }
+
+    // Check if text is actually truncated (scrollWidth > clientWidth)
+    // Add a small tolerance (1px) to account for rounding differences
+    const isTruncated = element.scrollWidth > element.clientWidth + 1;
+
+    if (isTruncated) {
+      // Text is truncated - add title and class for hover tooltip
+      element.setAttribute("title", fullText);
+      element.classList.add("is-truncated");
+    } else {
+      // Text is not truncated - remove title and class
+      element.removeAttribute("title");
+      element.classList.remove("is-truncated");
+    }
+  }, 0);
+}
+
 function updateSessionDetailPage(session, dynamicFields = null) {
   console.log("🔄 updateSessionDetailPage called with session:", session);
+  console.log("🔍 Session emr_type_id:", session.emr_type_id);
+  console.log("🔍 Session emr_type_name:", session.emr_type_name);
+  console.log("🔍 Session session_type:", session.session_type);
+  console.log("🔍 All session keys:", Object.keys(session));
 
   // Get client name from storage
   chrome.storage.local.get(["currentClient"], function (result) {
@@ -3022,32 +3289,65 @@ function updateSessionDetailPage(session, dynamicFields = null) {
     const instructionsTab = document.getElementById("session-instructions");
     const createdTab = document.getElementById("session-created");
 
-    if (clientNameTab) clientNameTab.textContent = clientName;
+    if (clientNameTab) {
+      clientNameTab.textContent = clientName;
+      // Only add title if text is truncated
+      checkAndSetTruncationTooltip(clientNameTab, clientName);
+    }
 
     // EMR Type: prefer server-provided name; otherwise resolve from emr_type_id
+    // IMPORTANT: Do NOT use session_type (that's "Individual Therapy", etc.) - use emr_type_name or fetch from emr_type_id
     if (typeTab) {
+      let emrTypeName = "Unknown Type";
+
+      // Check if session has emr_type_name (the actual EMR type like "MyEnvolve", "Dragon Test", etc.)
       if (session.emr_type_name) {
-        typeTab.textContent = session.emr_type_name;
+        emrTypeName = session.emr_type_name;
+        console.log("✅ Using session.emr_type_name:", emrTypeName);
+        typeTab.textContent = emrTypeName;
+        // Only add title if text is truncated
+        checkAndSetTruncationTooltip(typeTab, emrTypeName);
       } else if (session.emr_type_id) {
+        // Fetch EMR type name from API using emr_type_id
+        console.log(
+          "🔄 Fetching EMR type name for emr_type_id:",
+          session.emr_type_id
+        );
         getEMRTypeName(session.emr_type_id)
           .then((name) => {
-            typeTab.textContent = name || "Unknown Type";
+            emrTypeName = name || "Unknown Type";
+            console.log("✅ Fetched EMR type name:", emrTypeName);
+            typeTab.textContent = emrTypeName;
+            typeTab.setAttribute("title", emrTypeName); // Add title for hover tooltip
           })
-          .catch(() => {
-            typeTab.textContent = "Unknown Type";
+          .catch((error) => {
+            console.error("❌ Error fetching EMR type name:", error);
+            typeTab.textContent = emrTypeName;
+            typeTab.setAttribute("title", emrTypeName); // Add title for hover tooltip
           });
       } else {
-        typeTab.textContent = "Unknown Type";
+        console.warn("⚠️ No emr_type_name or emr_type_id found in session");
+        typeTab.textContent = emrTypeName;
+        // Only add title if text is truncated
+        checkAndSetTruncationTooltip(typeTab, emrTypeName);
       }
     }
 
-    if (instructionsTab)
-      instructionsTab.textContent =
+    if (instructionsTab) {
+      const instructions =
         session.manual_instructions || "No instructions provided";
-    if (createdTab)
-      createdTab.textContent = session.created_at
+      instructionsTab.textContent = instructions;
+      // Only add title if text is truncated
+      checkAndSetTruncationTooltip(instructionsTab, instructions);
+    }
+    if (createdTab) {
+      const createdText = session.created_at
         ? new Date(session.created_at).toLocaleString()
         : "No date";
+      createdTab.textContent = createdText;
+      // Only add title if text is truncated
+      checkAndSetTruncationTooltip(createdTab, createdText);
+    }
 
     // Update AI Notes content with real session data
     const methodsText = document.getElementById("ai-notes-methods-text");
@@ -3349,27 +3649,25 @@ async function addModalityFieldsToView(session, dynamicFields, container) {
   }
 }
 
-// Function to create a dynamic field element
+// Function to create a dynamic field element for the manual session view page
+// In view mode, we want the same plain-text style as the auto-detected session page
 function createDynamicFieldElement(fieldName, fieldValue, fieldType) {
+  // Reuse the auto-session plain-text renderer so both pages look consistent
+  return createAutoSessionViewFieldElement(fieldName, fieldValue, fieldType);
+}
+
+// Function to create a plain-text view field for auto-detected session page
+function createAutoSessionViewFieldElement(fieldName, fieldValue, fieldType) {
   const fieldElement = document.createElement("div");
-  fieldElement.className = "session-detail-item dynamic-field";
+  fieldElement.className = "session-detail-item dynamic-field view-mode";
 
   // Format field name (convert snake_case to Title Case)
   const formattedName = fieldName
     .replace(/_/g, " ")
     .replace(/\b\w/g, (l) => l.toUpperCase());
 
-  // Format field value based on type
-  let formattedValue = fieldValue;
-  if (fieldType === "date" && fieldValue) {
-    try {
-      formattedValue = new Date(fieldValue).toLocaleDateString();
-    } catch (e) {
-      formattedValue = fieldValue;
-    }
-  } else if (fieldType === "boolean") {
-    // Display checkbox for boolean fields (read-only)
-    // Handle various truthy values from database: true, "true", "True", 1, "1"
+  // Handle booleans as a read-only checkbox (still makes sense visually)
+  if (fieldType === "boolean") {
     const isChecked =
       fieldValue === true ||
       fieldValue === "true" ||
@@ -3377,34 +3675,51 @@ function createDynamicFieldElement(fieldName, fieldValue, fieldType) {
       fieldValue === 1 ||
       fieldValue === "1" ||
       (typeof fieldValue === "string" && fieldValue.toLowerCase() === "true");
+
     fieldElement.innerHTML = `
       <span class="detail-label">${formattedName}</span>
       <span class="detail-value">
         <input type="checkbox" ${
           isChecked ? "checked" : ""
-        } disabled style="pointer-events: none;">
+        } disabled style="pointer-events: none; width: 18px; height: 18px; cursor: not-allowed;">
       </span>
     `;
     return fieldElement;
   }
 
-  // Add title attribute for tooltip if value exists and might be truncated
-  // Escape HTML entities in title to prevent issues
-  // Truncate long text values for display, but keep full value in tooltip
-  let displayValue = formattedValue || "";
-  if (typeof displayValue === "string" && displayValue.length > 200) {
-    displayValue = displayValue.slice(0, 200) + "...";
+  // Format dates nicely
+  let formattedValue = fieldValue;
+  if (fieldType === "date" && fieldValue) {
+    try {
+      formattedValue = new Date(fieldValue).toLocaleDateString();
+    } catch (e) {
+      formattedValue = fieldValue;
+    }
   }
 
-  const escapedValue = formattedValue
-    ? formattedValue.replace(/"/g, "&quot;").replace(/'/g, "&#39;")
-    : "";
-  const titleAttr = escapedValue ? `title="${escapedValue}"` : "";
+  const rawValue =
+    formattedValue !== null && formattedValue !== undefined
+      ? String(formattedValue)
+      : "";
+
+  // Escape for HTML text and title attribute
+  const escapedText = rawValue
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
   fieldElement.innerHTML = `
     <span class="detail-label">${formattedName}</span>
-    <span class="detail-value" ${titleAttr}>${displayValue}</span>
+    <span class="detail-value">${escapedText || "-"}</span>
   `;
+
+  // Only add title if text is truncated (check after element is in DOM)
+  const detailValue = fieldElement.querySelector(".detail-value");
+  if (detailValue && escapedText) {
+    checkAndSetTruncationTooltip(detailValue, escapedText);
+  }
 
   return fieldElement;
 }
@@ -6014,6 +6329,41 @@ function cancelEditCompanyInfo() {
   console.log("✅ Company Info edit cancelled");
 }
 
+// Helper: set all Generate / Re-generate buttons into loading state with spinner
+function setGenerateButtonsLoading(label) {
+  const generateButtons = document.querySelectorAll(
+    ".generate-ai-notes-button, .re-generate-button"
+  );
+  generateButtons.forEach((button) => {
+    button.disabled = true;
+    button.innerHTML = `<span class="button-spinner"></span><span class="button-label">${label}</span>`;
+  });
+}
+
+// Helper: reset all Generate / Re-generate buttons to a given label
+function resetGenerateButtons(label) {
+  const generateButtons = document.querySelectorAll(
+    ".generate-ai-notes-button, .re-generate-button"
+  );
+  generateButtons.forEach((button) => {
+    button.disabled = false;
+    button.textContent = label;
+  });
+}
+
+// Helper: loading state for a single button (e.g. auto-detected page)
+function setSingleGenerateButtonLoading(button, label) {
+  if (!button) return;
+  button.disabled = true;
+  button.innerHTML = `<span class="button-spinner"></span><span class="button-label">${label}</span>`;
+}
+
+function resetSingleGenerateButton(button, label) {
+  if (!button) return;
+  button.disabled = false;
+  button.textContent = label;
+}
+
 // Generate AI Notes function
 async function generateAINotes() {
   try {
@@ -6038,14 +6388,8 @@ async function generateAINotes() {
       return;
     }
 
-    // Show loading state for both buttons
-    const generateButtons = document.querySelectorAll(
-      ".generate-ai-notes-button, .re-generate-button"
-    );
-    generateButtons.forEach((button) => {
-      button.textContent = "Generating...";
-      button.disabled = true;
-    });
+    // Show loading state for both buttons (with spinner)
+    setGenerateButtonsLoading("Generating...");
 
     // Make API call
     const response = await fetch(
@@ -6081,10 +6425,7 @@ async function generateAINotes() {
     chrome.storage.local.set({ currentSession: currentSession });
 
     // Reset button state for both buttons
-    generateButtons.forEach((button) => {
-      button.disabled = false;
-    });
-    updateGenerateButtonText("Re-generate");
+    resetGenerateButtons("Re-generate");
 
     // Show success message
     showSuccessMessage("AI Notes generated successfully!");
@@ -6093,13 +6434,7 @@ async function generateAINotes() {
     showErrorMessage("Failed to generate AI notes. Please try again.");
 
     // Reset button state for both buttons
-    const generateButtons = document.querySelectorAll(
-      ".generate-ai-notes-button, .re-generate-button"
-    );
-    generateButtons.forEach((button) => {
-      button.disabled = false;
-    });
-    updateGenerateButtonText("Generate AI Notes");
+    resetGenerateButtons("Generate AI Notes");
   }
 }
 
@@ -6115,8 +6450,38 @@ async function loadSessionAINotes() {
       return;
     }
 
-    const session = sessionResult.currentSession;
+    let session = sessionResult.currentSession;
     console.log("📋 Loading AI Notes for session:", session.id);
+
+    // Always fetch fresh session data from API to ensure we have the latest AI notes from database
+    try {
+      const tokenResult = await chrome.storage.local.get(["accessToken"]);
+      if (tokenResult.accessToken) {
+        console.log(
+          "🔄 Fetching fresh session data from API to get latest AI notes..."
+        );
+        const response = await fetch(`${API_BASE_URL}/sessions/${session.id}`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${tokenResult.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+        if (response.ok) {
+          session = await response.json();
+          console.log("✅ Fetched fresh session from API with AI notes:", {
+            hasMethods: !!session.methods_response,
+            hasProgress: !!session.progress_towards_goal_response,
+            hasRecommended: !!session.recommended_changes_response,
+          });
+          // Update stored session with fresh data
+          chrome.storage.local.set({ currentSession: session });
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error fetching fresh session:", error);
+      // Continue with stored session data if API fetch fails
+    }
 
     // Check if session has existing AI Notes
     if (
@@ -7064,10 +7429,10 @@ async function findOrCreateSession(
 ) {
   try {
     console.log(
-      "🔍 Looking for session with client:",
+      "🔍 Looking for session with client_id:",
       clientId,
-      "emr_type:",
-      emrTypeId
+      "appt_date:",
+      sessionData.appt_date
     );
 
     const response = await fetch(
@@ -7092,13 +7457,47 @@ async function findOrCreateSession(
 
     const sessions = await response.json();
 
-    const matchingSession = sessions.find(
-      (session) =>
-        session.emr_type_id === emrTypeId || session.emr_type_id == emrTypeId
-    );
+    // Get appointment date from sessionData (appt_date is timestamp without timezone)
+    const apptDate = sessionData.appt_date;
+
+    console.log("🔍 Looking for session with appt_date:", apptDate);
+
+    // Find matching session by client_id (already filtered) and appointment date
+    const matchingSession = sessions.find((session) => {
+      // Get appointment date from session (appt_date is timestamp without timezone)
+      const sessionApptDate = session.appt_date;
+
+      // If either is missing, they don't match
+      if (!apptDate || !sessionApptDate) {
+        return false;
+      }
+
+      // Normalize timestamps to date-only for comparison (YYYY-MM-DD)
+      // appt_date is timestamp without timezone, so we extract just the date portion
+      const normalizeTimestampToDate = (timestampValue) => {
+        if (!timestampValue) return null;
+        // Parse the timestamp and extract date portion
+        const date = new Date(timestampValue);
+        if (isNaN(date.getTime())) return null;
+        // Return date in YYYY-MM-DD format for consistent comparison
+        return date.toISOString().split("T")[0];
+      };
+
+      const normalizedApptDate = normalizeTimestampToDate(apptDate);
+      const normalizedSessionApptDate =
+        normalizeTimestampToDate(sessionApptDate);
+
+      // Compare normalized dates
+      return normalizedApptDate && normalizedSessionApptDate
+        ? normalizedApptDate === normalizedSessionApptDate
+        : false;
+    });
 
     if (matchingSession) {
-      console.log("✅ Found existing session, updating:", matchingSession.id);
+      console.log(
+        "✅ Found existing session (matching client_id and appt_date), updating:",
+        matchingSession.id
+      );
 
       const updateResponse = await fetch(
         `${API_BASE_URL}/sessions/${matchingSession.id}`,
@@ -7162,8 +7561,7 @@ async function handleGenerateAINotesFromDetected() {
     console.log("🚀 Starting AI Notes generation from detected session...");
 
     if (generateButton) {
-      generateButton.disabled = true;
-      generateButton.textContent = "Generating AI Notes...";
+      setSingleGenerateButtonLoading(generateButton, "Generating...");
     }
 
     const tokenResult = await chrome.storage.local.get(["accessToken"]);
@@ -7315,7 +7713,30 @@ async function handleGenerateAINotesFromDetected() {
 
     const sessionDetails = await sessionResponse.json();
 
-    // Step 6: Fetch dynamic fields
+    // Step 6: Fetch and store client if available
+    if (sessionDetails.client_id) {
+      try {
+        const clientResponse = await fetch(
+          `${API_BASE_URL}/api/Clients/${sessionDetails.client_id}`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${tokenResult.accessToken}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        if (clientResponse.ok) {
+          const client = await clientResponse.json();
+          chrome.storage.local.set({ currentClient: client });
+          console.log("✅ Client data stored:", client);
+        }
+      } catch (error) {
+        console.error("❌ Error fetching client:", error);
+      }
+    }
+
+    // Step 7: Fetch dynamic fields
     let dynamicFields = null;
     if (sessionDetails.emr_type_id) {
       try {
@@ -7378,8 +7799,7 @@ async function handleGenerateAINotesFromDetected() {
     showErrorMessage(`Failed: ${error.message}`);
   } finally {
     if (generateButton) {
-      generateButton.disabled = false;
-      generateButton.textContent = "Generate AI Notes";
+      resetSingleGenerateButton(generateButton, "Generate AI Notes");
     }
   }
 }
@@ -8234,9 +8654,14 @@ async function loadSessionDynamicFields(sessionData) {
             // Don't lock body scroll for modals
           });
         } else if (fieldType === "boolean") {
-          console.log("🔍 Creating checkbox input");
+          console.log("🔍 Creating checkbox input for boolean field");
           input = document.createElement("input");
           input.type = "checkbox";
+          // Ensure checkbox is always enabled and functional in edit mode
+          input.disabled = false;
+          input.readOnly = false;
+          input.style.cssText =
+            "width: 18px; height: 18px; cursor: pointer; pointer-events: auto !important; z-index: 999 !important; position: relative; margin: 0;";
         } else if (fieldType === "dropdown") {
           input = document.createElement("select");
           // Get dropdown values from the EMR field
@@ -8283,8 +8708,16 @@ async function loadSessionDynamicFields(sessionData) {
         }
 
         // Get the actual value from session data
-        const fieldValue = sessionData[fieldName] || "";
-        console.log("🔍 Field value for", fieldName, ":", fieldValue);
+        const fieldValue =
+          sessionData[fieldName] !== undefined ? sessionData[fieldName] : "";
+        console.log(
+          "🔍 Field value for",
+          fieldName,
+          ":",
+          fieldValue,
+          "type:",
+          typeof fieldValue
+        );
 
         // Set value based on field type
         console.log(
@@ -8296,9 +8729,26 @@ async function loadSessionDynamicFields(sessionData) {
 
         if (fieldType === "boolean") {
           console.log("🔍 Setting checkbox value:", fieldValue);
-          input.checked =
-            fieldValue === true || fieldValue === "true" || fieldValue === "1";
-          console.log("🔍 Checkbox checked:", input.checked);
+          // Handle all possible boolean value formats
+          const isChecked =
+            fieldValue === true ||
+            fieldValue === "true" ||
+            fieldValue === "True" ||
+            fieldValue === 1 ||
+            fieldValue === "1" ||
+            (typeof fieldValue === "string" &&
+              fieldValue.toLowerCase() === "true") ||
+            fieldValue === "yes" ||
+            fieldValue === "Yes";
+          input.checked = isChecked;
+          console.log(
+            "🔍 Checkbox checked:",
+            input.checked,
+            "from value:",
+            fieldValue,
+            "type:",
+            typeof fieldValue
+          );
         } else if (fieldType === "date" && fieldValue) {
           // Convert date to YYYY-MM-DD format for date input
           const date = new Date(fieldValue);
@@ -8710,9 +9160,19 @@ async function loadSessionDynamicFields(sessionData) {
           console.log("🔍 Made manual field read-only:", manualField.name);
         }
 
-        // Get the actual value from session data
-        const fieldValue = sessionData[emrField.api_name] || "";
-        console.log("🔍 Field value for", emrField.api_name, ":", fieldValue);
+        // Get the actual value from session data (preserve false/0 values)
+        const fieldValue =
+          sessionData[emrField.api_name] !== undefined
+            ? sessionData[emrField.api_name]
+            : "";
+        console.log(
+          "🔍 Field value for",
+          emrField.api_name,
+          ":",
+          fieldValue,
+          "type:",
+          typeof fieldValue
+        );
 
         // Set value based on field type
         console.log(
@@ -8724,9 +9184,26 @@ async function loadSessionDynamicFields(sessionData) {
 
         if (fieldType === "boolean") {
           console.log("🔍 Setting checkbox value:", fieldValue);
-          input.checked =
-            fieldValue === true || fieldValue === "true" || fieldValue === "1";
-          console.log("🔍 Checkbox checked:", input.checked);
+          // Handle all possible boolean value formats
+          const isChecked =
+            fieldValue === true ||
+            fieldValue === "true" ||
+            fieldValue === "True" ||
+            fieldValue === 1 ||
+            fieldValue === "1" ||
+            (typeof fieldValue === "string" &&
+              fieldValue.toLowerCase() === "true") ||
+            fieldValue === "yes" ||
+            fieldValue === "Yes";
+          input.checked = isChecked;
+          console.log(
+            "🔍 Checkbox checked:",
+            input.checked,
+            "from value:",
+            fieldValue,
+            "type:",
+            typeof fieldValue
+          );
         } else if (fieldType === "date" && fieldValue) {
           // Convert date to YYYY-MM-DD format for date input
           const date = new Date(fieldValue);
@@ -10337,27 +10814,28 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
     currentAutoDetectedScrapedData = scrapedData;
     currentAutoDetectedEmrTypeId = emrTypeId; // ADD THIS LINE
 
-    // Populate static fields (Client, Type, Instructions) with tooltips
-    const autoClientEl = document.getElementById("auto-client");
-    if (autoClientEl) {
-      autoClientEl.textContent = clientName;
-      autoClientEl.title = clientName; // Tooltip for full text (browser handles escaping)
+    // Populate static fields (Client, Type, Instructions) in plain text for view mode
+    const autoClientValueEl = document.getElementById("auto-client");
+    if (autoClientValueEl) {
+      const text = clientName || "-";
+      autoClientValueEl.textContent = text;
+      autoClientValueEl.title = text;
     }
 
-    const autoTypeEl = document.getElementById("auto-type");
-    if (autoTypeEl) {
-      autoTypeEl.textContent = emrTypeName;
-      autoTypeEl.title = emrTypeName; // Tooltip for full text (browser handles escaping)
+    const autoTypeValueEl = document.getElementById("auto-type");
+    if (autoTypeValueEl) {
+      const text = emrTypeName || "-";
+      autoTypeValueEl.textContent = text;
+      autoTypeValueEl.title = text;
     }
 
-    const autoInstructionsEl = document.getElementById("auto-instructions");
-    if (autoInstructionsEl) {
+    const autoInstructionsValueEl =
+      document.getElementById("auto-instructions");
+    if (autoInstructionsValueEl) {
       const instructionsText =
-        scrapedData.Instructions || scrapedData.instructions || "";
-      autoInstructionsEl.textContent = instructionsText;
-      if (instructionsText) {
-        autoInstructionsEl.title = instructionsText; // Tooltip for full text (browser handles escaping)
-      }
+        scrapedData.Instructions || scrapedData.instructions || "-";
+      autoInstructionsValueEl.textContent = instructionsText;
+      autoInstructionsValueEl.title = instructionsText;
     }
 
     // Populate confirmed results fields (view mode)
@@ -10430,7 +10908,8 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
           fieldValue
         );
 
-        const fieldElement = createDynamicFieldElement(
+        // In view mode on the auto-detected session page, show plain text (no input boxes)
+        const fieldElement = createAutoSessionViewFieldElement(
           result.key, // Display name (what user sees)
           fieldValue !== null && fieldValue !== undefined ? fieldValue : "",
           fieldDef.type
@@ -10536,7 +11015,62 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
 
       if (fieldDef) {
         const sessionKey = fieldDef.api_name;
-        const fieldValue = scrapedData[sessionKey];
+        let fieldValue = scrapedData[sessionKey];
+
+        // Format date/datetime values to proper format for input fields
+        if (fieldDef.type === "date" && fieldValue) {
+          // Check if already in YYYY-MM-DD format
+          const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+          if (!dateRegex.test(fieldValue)) {
+            // Try to parse and format as YYYY-MM-DD
+            const parsedDate = parseDate(fieldValue);
+            if (parsedDate) {
+              fieldValue = parsedDate;
+            } else {
+              // If parseDate fails, try direct Date parsing
+              try {
+                const date = new Date(fieldValue);
+                if (!isNaN(date.getTime())) {
+                  fieldValue = date.toISOString().split("T")[0];
+                }
+              } catch (e) {
+                console.warn(
+                  "Failed to parse date for manual field:",
+                  fieldValue
+                );
+              }
+            }
+          }
+        } else if (fieldDef.type === "datetime" && fieldValue) {
+          // Check if already in YYYY-MM-DDTHH:MM format
+          const datetimeRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+          if (!datetimeRegex.test(fieldValue)) {
+            // Try to parse and format as YYYY-MM-DDTHH:MM
+            const parsedDateTime = parseDateTime(fieldValue);
+            if (parsedDateTime) {
+              fieldValue = parsedDateTime;
+            } else {
+              // If parseDateTime fails, try direct Date parsing
+              try {
+                const date = new Date(fieldValue);
+                if (!isNaN(date.getTime())) {
+                  const year = date.getFullYear();
+                  const month = String(date.getMonth() + 1).padStart(2, "0");
+                  const day = String(date.getDate()).padStart(2, "0");
+                  const hours = String(date.getHours()).padStart(2, "0");
+                  const minutes = String(date.getMinutes()).padStart(2, "0");
+                  fieldValue = `${year}-${month}-${day}T${hours}:${minutes}`;
+                }
+              } catch (e) {
+                console.warn(
+                  "Failed to parse datetime for manual field:",
+                  fieldValue
+                );
+              }
+            }
+          }
+        }
+
         console.log(
           `✅ Creating manual field '${fieldDef.name}' with value:`,
           fieldValue
@@ -10738,9 +11272,26 @@ function createEditableFieldElement(
       fieldValue === 1 ||
       fieldValue === "1" ||
       (typeof fieldValue === "string" && fieldValue.toLowerCase() === "true");
-    inputElement = `<input type="checkbox" ${
-      isChecked ? "checked" : ""
-    } data-field-name="${fieldName}" data-field-type="${fieldType}">`;
+    // Create checkbox element directly to ensure it's fully functional
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = isChecked;
+    checkbox.setAttribute("data-field-name", fieldName);
+    checkbox.setAttribute("data-field-type", fieldType);
+    checkbox.style.cssText =
+      "width: 18px; height: 18px; cursor: pointer; pointer-events: auto !important; z-index: 999 !important; position: relative; margin: 0;";
+    checkbox.disabled = false;
+    checkbox.readOnly = false;
+
+    // Return early with checkbox element
+    fieldElement.innerHTML = `
+      <span class="detail-label">${formattedName}</span>
+      <span class="detail-value" style="pointer-events: auto !important; z-index: 999 !important; position: relative;">
+      </span>
+    `;
+    const detailValue = fieldElement.querySelector(".detail-value");
+    detailValue.appendChild(checkbox);
+    return fieldElement;
   } else if (fieldType === "date") {
     inputElement = `<input type="date" value="${
       fieldValue || ""
@@ -10778,9 +11329,31 @@ function createEditableFieldElement(
       fieldValue || ""
     }</textarea>`;
   } else {
-    inputElement = `<input type="text" value="${
-      fieldValue || ""
-    }" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">`;
+    // Check if field value is long text (>100 chars) - show as textarea in edit mode too
+    const fieldValueStr = fieldValue ? String(fieldValue) : "";
+    if (fieldValueStr.length > 100) {
+      // Escape HTML entities for textarea content
+      const escapedValue = fieldValue
+        ? String(fieldValue)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;")
+        : "";
+      inputElement = `<textarea rows="3" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">${escapedValue}</textarea>`;
+    } else {
+      // Escape HTML entities for input value
+      const escapedValue = fieldValue
+        ? String(fieldValue)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;")
+        : "";
+      inputElement = `<input type="text" value="${escapedValue}" data-field-name="${fieldName}" data-field-type="${fieldType}" class="editable-input">`;
+    }
   }
 
   fieldElement.innerHTML = `
