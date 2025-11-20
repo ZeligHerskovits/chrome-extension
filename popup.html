@@ -148,25 +148,20 @@
             <h2>New EMR Type</h2>
           </div>
 
+          <!-- Pending EMR Request Message -->
+          <div class="pending-emr-request-message" id="pending-emr-request-message" style="display: none;">
+            <div class="pending-message-content">
+              <span class="pending-icon">⏳</span>
+              <span class="pending-text">You have a pending EMR request that is being reviewed.</span>
+            </div>
+          </div>
+
           <div class="form-container">
             <!-- EMR Type -->
             <div class="input-group">
               <label class="input-label">EMR Type</label>
               <div class="input-wrapper">
-                <select class="form-input" id="emr-type">
-                  <option value="">Select EMR Type</option>
-                  <option value="full-html">Full.html</option>
-                  <option value="dragon-test">Dragon Test</option>
-                  <option value="dragon-9-3">Dragon 9.3</option>
-                  <option value="myenvolve">MyEnvolve</option>
-                  <option value="comedian">Comedian</option>
-                  <option value="ysl">YSL</option>
-                  <option value="dragon-uc">Dragon UC</option>
-                  <option value="dragon-uc">Test 1</option>
-                  <option value="dragon-uc">Test 2</option>
-                  <option value="dragon-uc">Test 3</option>
-                </select>
-                <div class="dropdown-arrow"></div>
+                <input type="text" class="form-input" id="emr-type" placeholder="Enter EMR Type">
               </div>
             </div>
 
@@ -257,7 +252,7 @@
               Personal Info
             </div>
             <div class="tab-button" id="profile-emr-tab" data-tab="emr-info">
-              EMR Info
+              EMR Personalization
             </div>
           </div> 
 
@@ -363,7 +358,7 @@
               <div class="section-header">
                 <div class="section-title">
                   <span class="section-icon">🖥️</span>
-                  <span>EMR Info</span>
+                  <span>EMR Personalization</span>
                 </div>
                 <div class="section-actions">
                   <button class="edit-btn" id="edit-emr-info-btn">✏️</button>
@@ -445,7 +440,12 @@
           <div class="tab-content active" id="client-info-content">
           <!-- Client Detail Card -->
           <div class="detail-card">
-            <h2 class="card-title">Client Detail</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+              <h2 class="card-title" style="margin: 0;">Client Detail</h2>
+              <button class="edit-client-btn" id="edit-client-from-detail-btn" title="Edit Client" style="background: none; border: none; cursor: pointer; padding: 4px 8px; color: #1976d2; font-size: 18px; display: flex; align-items: center; justify-content: center;">
+                ✏️
+              </button>
+            </div>
 
             <div class="client-profile">
               <div class="client-avatar-large">
@@ -741,6 +741,7 @@
                 <span class="detail-label">Instructions</span>
                 <span class="detail-value" id="auto-instructions">-</span>
               </div>
+              <h3 class="card-title" id="auto-session-data-title" style="margin-top: 20px; margin-bottom: 16px;">Session Data</h3>
               <div id="auto-confirmed-results-container"></div>
               <div id="auto-manual-fields-container"></div>
             </div>
@@ -775,16 +776,16 @@
             <!-- Main Client Information -->
             <div class="form-section">
               <div class="form-group">
-                <label for="client-first-name">First Name</label>
+                <label for="client-first-name">First Name <span style="color: red;">*</span></label>
                 <input type="text" id="client-first-name" name="firstName" required>
               </div>
               <div class="form-group">
-                <label for="client-last-name">Last Name</label>
+                <label for="client-last-name">Last Name <span style="color: red;">*</span></label>
                 <input type="text" id="client-last-name" name="lastName" required>
               </div>
               <div class="form-group">
-                <label for="client-date-of-birth">Date of Birth</label>
-                <input type="date" id="client-date-of-birth" name="dateOfBirth">
+                <label for="client-date-of-birth">Date of Birth <span style="color: red;">*</span></label>
+                <input type="date" id="client-date-of-birth" name="dateOfBirth" required>
               </div>
               <div class="form-group">
                 <label for="client-phone">Phone</label>

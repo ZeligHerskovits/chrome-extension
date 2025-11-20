@@ -14,20 +14,24 @@
     return;
   }
 
+  // Load saved position from storage
+  const savedPosition = await chrome.storage.local.get(["toggleButtonTop"]);
+  const initialTop = savedPosition.toggleButtonTop || "50%";
+
   // Create the toggle button
   const toggleBtn = document.createElement("div");
   toggleBtn.id = "sessynote-toggle-btn";
   toggleBtn.innerHTML =
     '<img src="' +
     chrome.runtime.getURL("icons/icon48.png") +
-    '" style="width: 32px; height: 32px; object-fit: contain;">';
-  toggleBtn.title = "Toggle SessyNote";
+    '" style="width: 44px; height: 44px; object-fit: contain;">';
+  toggleBtn.title = "Toggle SessyNote (Drag to move)";
 
   // Add styles
   toggleBtn.style.cssText = `
     position: fixed;
     right: 0;
-    top: 50%;
+    top: ${initialTop};
     transform: translateY(-50%);
     width: 48px;
     height: 48px;
@@ -40,36 +44,98 @@
     border-radius: 8px 0 0 8px;
     box-shadow: -2px 2px 12px rgba(0, 0, 0, 0.15);
     z-index: 2147483647;
-    transition: all 0.3s ease;
+    transition: background-color 0.3s ease, width 0.3s ease;
     user-select: none;
     border: 1px solid #e0e0e0;
     border-right: none;
+    padding: 4px;
   `;
+
+  // Drag functionality
+  let isDragging = false;
+  let dragStartY = 0;
+  let dragStartTop = 0;
+  let clickStartTime = 0;
+  let clickStartY = 0;
+
+  toggleBtn.addEventListener("mousedown", (e) => {
+    clickStartTime = Date.now();
+    clickStartY = e.clientY;
+    
+    // Start dragging
+    isDragging = true;
+    dragStartY = e.clientY;
+    
+    // Get current top position
+    const currentTop = toggleBtn.style.top;
+    dragStartTop = currentTop.includes("%")
+      ? (parseFloat(currentTop) / 100) * window.innerHeight
+      : parseFloat(currentTop);
+    
+    toggleBtn.style.cursor = "grabbing";
+    toggleBtn.style.transition = "none"; // Disable transition during drag
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (isDragging) {
+      const deltaY = e.clientY - dragStartY;
+      let newTop = dragStartTop + deltaY;
+      
+      // Constrain to viewport bounds
+      const buttonHeight = 48;
+      const minTop = buttonHeight / 2;
+      const maxTop = window.innerHeight - buttonHeight / 2;
+      newTop = Math.max(minTop, Math.min(maxTop, newTop));
+      
+      toggleBtn.style.top = `${newTop}px`;
+      toggleBtn.style.transform = "translateY(-50%)";
+    }
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (isDragging) {
+      const clickDuration = Date.now() - clickStartTime;
+      const clickDistance = Math.abs(dragStartY - clickStartY);
+      
+      isDragging = false;
+      toggleBtn.style.cursor = "pointer"; // Back to pointer cursor
+      toggleBtn.style.transition = "background-color 0.3s ease, width 0.3s ease";
+      
+      // Save position to storage
+      const currentTop = toggleBtn.style.top;
+      chrome.storage.local.set({ toggleButtonTop: currentTop });
+      
+      // Only toggle if it was a quick click (not a drag)
+      if (clickDuration < 200 && clickDistance < 5) {
+        console.log("SessyNote: Toggle button clicked");
+        chrome.runtime.sendMessage({ action: "toggleSidePanel" }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error(
+              "SessyNote: Error sending message:",
+              chrome.runtime.lastError
+            );
+          } else {
+            console.log("SessyNote: Message sent successfully");
+          }
+        });
+      }
+    }
+  });
 
   // Hover effect
   toggleBtn.addEventListener("mouseenter", () => {
-    toggleBtn.style.backgroundColor = "#f8f8f8";
-    toggleBtn.style.width = "52px";
+    if (!isDragging) {
+      toggleBtn.style.backgroundColor = "#f8f8f8";
+      toggleBtn.style.width = "52px";
+    }
   });
 
   toggleBtn.addEventListener("mouseleave", () => {
-    toggleBtn.style.backgroundColor = "white";
-    toggleBtn.style.width = "48px";
-  });
-
-  // Click handler - toggles the side panel
-  toggleBtn.addEventListener("click", () => {
-    console.log("SessyNote: Toggle button clicked");
-    chrome.runtime.sendMessage({ action: "toggleSidePanel" }, (response) => {
-      if (chrome.runtime.lastError) {
-        console.error(
-          "SessyNote: Error sending message:",
-          chrome.runtime.lastError
-        );
-      } else {
-        console.log("SessyNote: Message sent successfully");
-      }
-    });
+    if (!isDragging) {
+      toggleBtn.style.backgroundColor = "white";
+      toggleBtn.style.width = "48px";
+    }
   });
 
   // Update button title based on side panel state
@@ -113,6 +179,23 @@
     }
   });
 
+  // Handle window resize to keep button within bounds
+  window.addEventListener("resize", () => {
+    const currentTop = toggleBtn.style.top;
+    if (currentTop && !currentTop.includes("%")) {
+      const topValue = parseFloat(currentTop);
+      const buttonHeight = 48;
+      const minTop = buttonHeight / 2;
+      const maxTop = window.innerHeight - buttonHeight / 2;
+      
+      if (topValue < minTop || topValue > maxTop) {
+        const constrainedTop = Math.max(minTop, Math.min(maxTop, topValue));
+        toggleBtn.style.top = `${constrainedTop}px`;
+        chrome.storage.local.set({ toggleButtonTop: `${constrainedTop}px` });
+      }
+    }
+  });
+
   // Inject into page
   document.body.appendChild(toggleBtn);
 })();
@@ -143,80 +226,71 @@
 
 async function checkAndScrapeIfMatch() {
   try {
-    // Get stored EMR URL and type ID
-    const storage = await chrome.storage.local.get(["emrUrl", "emrTypeId"]);
+    const currentUrl = window.location.href;
+    console.log("SessyNote: Checking URL against all pairs:", currentUrl);
 
-    if (!storage.emrUrl || !storage.emrTypeId) {
-      console.log("SessyNote: No EMR URL or type ID stored, skipping");
-      return;
-    }
-
-    // Extract domain from current URL
-    const currentDomain = window.location.hostname;
-
-    console.log(
-      "SessyNote: Comparing domains:",
-      currentDomain,
-      "vs",
-      storage.emrUrl
-    );
-
-    // Check if domains match
-    if (currentDomain === storage.emrUrl) {
-      console.log("SessyNote: Domain match! Starting scrape...");
-
-      // Ask background script to fetch EMR type (to avoid CORS)
-      chrome.runtime.sendMessage(
-        { action: "fetchEMRType", emrTypeId: storage.emrTypeId },
-        async (response) => {
-          if (response && response.success && response.emrType) {
-            const emrType = response.emrType;
-
-            if (!emrType.response) {
-              console.error("SessyNote: No response field in EMR type");
-              return;
-            }
-
-            // Wait for QuickBase page to fully load (takes longer due to dynamic content)
-            await new Promise((resolve) => setTimeout(resolve, 10000));
-
-            // Scrape data from page
-            const scrapedData = scrapePageData(emrType.response);
-
-            console.log("SessyNote: Scraped data:", scrapedData);
-
-            // Check if at least 5 values were found
-            const foundValuesCount = Object.keys(scrapedData).length;
-            if (foundValuesCount < 5) {
-              console.log(
-                `SessyNote: Only found ${foundValuesCount} value(s). Need at least 5 to consider this a session page. Skipping...`
-              );
-              return;
-            }
-
-            console.log(
-              `SessyNote: Found ${foundValuesCount} values - this appears to be a session page. Proceeding...`
-            );
-
-            // Send to background script
-            chrome.runtime.sendMessage({
-              action: "autoFillSession",
-              data: {
-                scrapedData: scrapedData,
-                emrTypeId: storage.emrTypeId,
-              },
-            });
-          } else {
-            console.error(
-              "SessyNote: Failed to fetch EMR type:",
-              response?.error
-            );
-          }
+    // Ask background script to check URL against all pairs
+    chrome.runtime.sendMessage(
+      { action: "checkUrlAgainstAllPairs", currentUrl: currentUrl },
+      async (response) => {
+        if (!response || !response.success) {
+          console.error(
+            "SessyNote: Failed to check URL against pairs:",
+            response?.error
+          );
+          return;
         }
-      );
-    } else {
-      console.log("SessyNote: Domain does not match, skipping");
-    }
+
+        if (!response.matched) {
+          console.log("SessyNote: No URL match found in any pair, skipping");
+          return;
+        }
+
+        // Match found! Use the matched EMR type
+        const emrTypeId = response.emrTypeId;
+        const emrResponse = response.emrResponse;
+
+        console.log(
+          "SessyNote: ✅ URL match found! Using EMR Type ID:",
+          emrTypeId
+        );
+
+        if (!emrResponse) {
+          console.error("SessyNote: No response field in EMR type");
+          return;
+        }
+
+        // Wait for QuickBase page to fully load (takes longer due to dynamic content)
+        await new Promise((resolve) => setTimeout(resolve, 10000));
+
+        // Scrape data from page
+        const scrapedData = scrapePageData(emrResponse);
+
+        console.log("SessyNote: Scraped data:", scrapedData);
+
+        // Check if at least 5 values were found
+        const foundValuesCount = Object.keys(scrapedData).length;
+        if (foundValuesCount < 5) {
+          console.log(
+            `SessyNote: Only found ${foundValuesCount} value(s). Need at least 5 to consider this a session page. Skipping...`
+          );
+          return;
+        }
+
+        console.log(
+          `SessyNote: Found ${foundValuesCount} values - this appears to be a session page. Proceeding...`
+        );
+
+        // Send to background script
+        chrome.runtime.sendMessage({
+          action: "autoFillSession",
+          data: {
+            scrapedData: scrapedData,
+            emrTypeId: emrTypeId,
+          },
+        });
+      }
+    );
   } catch (error) {
     console.error("SessyNote: Error in checkAndScrapeIfMatch:", error);
   }

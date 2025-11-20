@@ -253,21 +253,21 @@ body {
 }
 
 .top-header .logo-icon {
-  width: 40px;
-  height: 40px;
+  width: 24px;
+  height: 24px;
   background: transparent;
-  border-radius: 8px;
+  border-radius: 4px;
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: visible;
+  overflow: hidden;
   position: relative;
 }
 
 .top-header .logo-icon img {
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .top-header .logo-text {
@@ -417,6 +417,34 @@ body {
 .content-header p {
   font-size: 14px;
   color: #666;
+}
+
+/* Pending EMR Request Message */
+.pending-emr-request-message {
+  background-color: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 0 20px 20px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pending-message-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #856404;
+  font-size: 14px;
+}
+
+.pending-icon {
+  font-size: 18px;
+}
+
+.pending-text {
+  font-weight: 500;
 }
 
 .placeholder-content {
@@ -1015,7 +1043,39 @@ body {
   background-color: white;
   border-radius: 8px;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  overflow: hidden;
+  overflow: visible;
+}
+
+/* Ensure dropdowns in company info section open downward */
+#company-info-content .detail-value select.edit-input {
+  position: relative;
+  z-index: 1000;
+}
+
+#company-info-content .detail-item {
+  position: relative;
+  overflow: visible;
+  z-index: 1;
+}
+
+#company-info-content .detail-item:has(.custom-emr-dropdown-wrapper) {
+  z-index: 99999;
+}
+
+#company-info-content {
+  overflow: visible;
+}
+
+/* When in edit mode, ensure the section card doesn't clip dropdowns */
+.profile-section-card
+  .section-content:has(.edit-input[type="text"], select.edit-input) {
+  overflow: visible;
+}
+
+/* Ensure profile section card allows dropdowns to overflow when in edit mode */
+.profile-section-card:has(.edit-input),
+.profile-section-card:has(.custom-emr-dropdown-wrapper) {
+  overflow: visible;
 }
 
 .section-header {
@@ -1095,7 +1155,8 @@ body {
 }
 
 .section-content {
-  padding: 20px;
+  padding: 12px 16px;
+  overflow: visible;
 }
 
 .detail-item {
@@ -1110,6 +1171,13 @@ body {
   border-bottom: none;
 }
 
+/* More compact spacing for EMR field */
+.detail-item:has(.array-edit-container),
+.detail-item:has(.emr-tags-container) {
+  padding: 4px 0;
+  align-items: flex-start;
+}
+
 .detail-label {
   font-size: 14px;
   font-weight: 500;
@@ -1122,6 +1190,19 @@ body {
   color: #666;
   text-align: right;
   flex: 1;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.detail-value:has(.emr-tags-container) {
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.detail-value:has(.emr-tags-container) {
+  text-align: left;
+  justify-content: flex-start;
 }
 
 .status-badge {
@@ -1165,18 +1246,45 @@ body {
 .badges-container {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px;
   justify-content: flex-end;
+  margin: 0;
+  padding: 0;
 }
 
 .info-badge {
   display: inline-block;
-  padding: 4px 8px;
+  padding: 2px 8px;
   background-color: #e3f2fd;
   color: #1976d2;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
+  margin: 0;
+}
+
+/* Coping Skills badge - purple color */
+.coping-skill-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background-color: #f3e5f5;
+  color: #7b1fa2;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
+}
+
+/* Clinical Specialties badge - pink color */
+.clinical-specialty-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background-color: #fce4ec;
+  color: #c2185b;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
 }
 
 /* Modal Styles */
@@ -1655,8 +1763,9 @@ select.edit-input {
 
 .pairs-container {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 2px;
   align-items: flex-start;
 }
 
@@ -1665,12 +1774,13 @@ select.edit-input {
   align-items: center;
   background-color: #e3f2fd;
   color: #1976d2;
-  padding: 6px 12px;
-  border-radius: 20px;
+  padding: 2px 8px;
+  border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  gap: 8px;
+  gap: 4px;
   width: auto;
+  margin: 0;
 }
 
 .pair-text {
@@ -1699,11 +1809,8 @@ select.edit-input {
 
 /* Array Edit Container Styles */
 .array-edit-container {
-  background: #f8f9fa;
-  border: 1px solid #e9ecef;
-  border-radius: 8px;
-  padding: 16px;
-  margin-bottom: 12px;
+  padding: 0;
+  margin-bottom: 0;
 }
 
 .array-edit-container label {
@@ -1715,7 +1822,10 @@ select.edit-input {
 }
 
 .selected-items {
-  margin-bottom: 16px;
+  margin-bottom: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
 }
 
 .selected-tag {
@@ -1723,12 +1833,12 @@ select.edit-input {
   align-items: center;
   background-color: #e3f2fd;
   color: #1976d2;
-  padding: 6px 12px;
-  border-radius: 20px;
+  padding: 2px 8px;
+  border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  gap: 8px;
-  margin: 4px 8px 4px 0;
+  gap: 4px;
+  margin: 0;
 }
 
 .selected-tag button {
@@ -1753,19 +1863,215 @@ select.edit-input {
 
 .add-item {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.add-item label {
+  display: block;
+  font-weight: 600;
+  color: #495057;
+  margin-bottom: 0;
+  font-size: 14px;
 }
 
 .add-item select {
-  flex: 1;
-  min-width: 200px;
-  padding: 8px 12px;
+  width: 100%;
+  padding: 6px 32px 6px 10px;
   border: 1px solid #ced4da;
   border-radius: 6px;
   font-size: 14px;
   background: white;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+}
+
+.add-item select:focus {
+  outline: none;
+  border-color: #298997;
+  box-shadow: 0 0 0 2px rgba(41, 137, 151, 0.1);
+}
+
+/* Custom EMR Dropdown Styles */
+.custom-emr-dropdown-wrapper {
+  position: relative;
+  width: 100%;
+  z-index: 99999;
+}
+
+.custom-emr-dropdown-button {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 32px 6px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  font-size: 14px;
+  background: white;
+  cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  transition: border-color 0.2s;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.dropdown-selected-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+  align-items: center;
+  min-height: 20px;
+}
+
+.dropdown-tag {
+  display: inline-flex;
+  align-items: center;
+  background-color: #e3f2fd;
+  color: #1976d2;
+  padding: 2px 4px 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  gap: 4px;
+}
+
+.dropdown-tag-text {
+  display: inline-block;
+}
+
+.dropdown-tag-remove {
+  background: transparent !important;
+  border: none !important;
+  color: #1565c0 !important;
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 0 !important;
+  cursor: pointer;
+  font-size: 11px !important;
+  font-weight: bold !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s ease;
+  padding: 0 !important;
+  line-height: 1 !important;
+  margin-left: 4px;
+  opacity: 0.9;
+  min-width: 12px !important;
+  min-height: 12px !important;
+}
+
+.dropdown-tag-remove:hover {
+  opacity: 1;
+  background: transparent !important;
+  color: #1565c0 !important;
+}
+
+/* EMR Tags in View Mode */
+.emr-tags-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  justify-content: flex-start;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.emr-view-tag {
+  display: inline-flex;
+  align-items: center;
+  background-color: #e3f2fd;
+  color: #1976d2;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  margin: 0;
+}
+
+.custom-emr-dropdown-button:hover {
+  border-color: #298997;
+}
+
+.custom-emr-dropdown-button.active {
+  border-color: #298997;
+  box-shadow: 0 0 0 2px rgba(41, 137, 151, 0.1);
+}
+
+.dropdown-placeholder {
+  color: #999;
+  pointer-events: none;
+  flex: 1;
+}
+
+.dropdown-arrow-icon {
+  font-size: 10px;
+  color: #666;
+  transition: transform 0.2s;
+  position: absolute;
+  right: 10px;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.custom-emr-dropdown-button.active .dropdown-arrow-icon {
+  transform: rotate(180deg);
+}
+
+.custom-emr-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: white;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  max-height: 200px;
+  overflow-y: auto;
+  z-index: 99999;
+  margin-top: 4px;
+}
+
+.custom-emr-dropdown-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: background-color 0.2s;
+  font-size: 14px;
+}
+
+.custom-emr-dropdown-item:hover {
+  background-color: #f8f9fa;
+}
+
+.custom-emr-dropdown-item.selected {
+  background-color: #e3f2fd;
+  color: #1976d2;
+}
+
+.custom-emr-dropdown-item .item-text {
+  flex: 1;
+}
+
+.custom-emr-dropdown-item .checkmark {
+  color: #1976d2;
+  font-weight: bold;
+  margin-left: 8px;
 }
 
 .add-item button {
@@ -2071,6 +2377,8 @@ select.edit-input {
   white-space: nowrap;
   max-width: 100%;
   cursor: help; /* Show help cursor for truncated text */
+  text-align: left !important;
+  display: block !important; /* Override flex to allow ellipsis */
 }
 
 /* Allow inputs/textarea to display fully without truncation */
@@ -2296,6 +2604,8 @@ select.editable-input:disabled,
   overflow: visible;
   text-overflow: initial;
   white-space: normal;
+  text-align: left !important;
+  justify-content: flex-start !important;
 }
 
 /* Containers for confirmed results - use contents to flatten into grid */
@@ -2321,7 +2631,7 @@ select.editable-input:disabled,
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding: 12px 0;
+  padding: 4px 0;
   border-bottom: none;
   min-width: 0; /* Allow grid items to shrink */
   width: 100%; /* Ensure full width */
@@ -2348,12 +2658,17 @@ select.editable-input:disabled,
 .session-detail-item .detail-value {
   font-size: 14px;
   color: #111827;
-  text-align: left;
+  text-align: left !important;
   width: 100%;
-  word-wrap: break-word;
   line-height: 1.5;
   min-height: 20px;
   pointer-events: auto; /* Ensure detail-value doesn't block checkbox clicks */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  display: block !important; /* Override flex to allow ellipsis */
+  min-width: 0; /* Allow flex item to shrink below content size for ellipsis */
 }
 
 /* Empty values styling */
@@ -2834,10 +3149,10 @@ select.editable-input:disabled,
 
 /* Card Title Background */
 .card-title {
-  background-color: #eaf3f5;
-  padding: 12px 16px;
-  margin: -20px -20px 20px -20px;
-  border-radius: 8px 8px 0 0;
+  background-color: transparent;
+  padding: 0;
+  margin: 0 0 20px 0;
+  border-radius: 0;
   font-size: 18px;
   font-weight: 600;
   color: #333;
@@ -2870,6 +3185,8 @@ select.editable-input:disabled,
 .session-details-above-tabs .detail-value {
   color: #666;
   flex: 1;
+  text-align: left !important;
+  justify-content: flex-start !important;
 }
 
 /* Session Info Tab Content Spacing */
@@ -2896,12 +3213,14 @@ select.editable-input:disabled,
 #session-info-content .detail-value {
   color: #666;
   flex: 1;
-  word-wrap: break-word; /* Handle long text gracefully */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
   cursor: default; /* Default cursor, will change to help only if truncated */
+  text-align: left !important;
+  display: block !important; /* Override flex to allow ellipsis */
+  min-width: 0; /* Allow flex item to shrink below content size for ellipsis */
 }
 
 /* Show tooltip on hover for truncated text in session info */
@@ -3100,6 +3419,7 @@ select.editable-input:disabled,
   display: flex;
   align-items: center;
   gap: 16px;
+  margin-top: 16px;
   margin-bottom: 24px;
 }
 
@@ -3394,3 +3714,45 @@ select.editable-input:disabled,
   color: white !important;
   border-color: #1976d2 !important;
 }
+
+/* Ensure all clickable/interactive elements show pointer cursor */
+button,
+a,
+.client-item,
+.menu-item,
+.tab-button,
+.action-icon,
+.add-client-btn-figma,
+.add-session-btn,
+.section-edit-button,
+.edit-button,
+.generate-ai-notes-button,
+.view-session-btn,
+.add-history-btn,
+[role="button"],
+[onclick] {
+  cursor: pointer !important;
+}
+
+/* Text inputs should show text cursor */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="date"],
+input[type="datetime-local"],
+input[type="tel"],
+input[type="url"],
+textarea,
+select {
+  cursor: text !important;
+}
+
+/* Checkboxes and radios should show pointer */
+input[type="checkbox"],
+input[type="radio"] {
+  cursor: pointer !important;
+}
+
+/* Don't interfere with Chrome's side panel resize handle - it's outside our content */
+/* The resize handle (4 arrows) will work on the left edge of the side panel */

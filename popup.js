@@ -521,13 +521,13 @@ async function fetchAndCacheEMRUrl(accessToken) {
     const emrTypeData = await emrTypeResponse.json();
     console.log("📋 EMR Type data:", emrTypeData);
 
-    // Parse response field if it's a JSON string
-    let emrResponse = emrTypeData.response;
+    // Parse json_response field if it's a JSON string
+    let emrResponse = emrTypeData.json_response;
     if (emrResponse && typeof emrResponse === "string") {
       try {
         emrResponse = JSON.parse(emrResponse);
       } catch (e) {
-        console.error("❌ Failed to parse response field:", e);
+        console.error("❌ Failed to parse json_response field:", e);
       }
     }
 
@@ -684,20 +684,20 @@ function setupEditButtonHandlers() {
     });
   }
 
-  // EMR Info edit button (top)
+  // EMR Personalization edit button (top)
   const editEMRBtn = document.getElementById("edit-emr-info-btn");
   if (editEMRBtn) {
     editEMRBtn.addEventListener("click", function () {
-      console.log("✏️ EMR Info edit button clicked");
+      console.log("✏️ EMR Personalization edit button clicked");
       editEMRInfo();
     });
   }
 
-  // EMR Info edit button (bottom)
+  // EMR Personalization edit button (bottom)
   const editEMRBottomBtn = document.getElementById("edit-emr-info-bottom-btn");
   if (editEMRBottomBtn) {
     editEMRBottomBtn.addEventListener("click", function () {
-      console.log("✏️ EMR Info bottom edit button clicked");
+      console.log("✏️ EMR Personalization bottom edit button clicked");
       editEMRInfo();
     });
   }
@@ -1395,7 +1395,7 @@ function setupClientsPageHandlers() {
     });
 
     profileEmrTab.addEventListener("click", function () {
-      // Switch to EMR Info tab
+      // Switch to EMR Personalization tab
       profileEmrTab.classList.add("active");
       profilePersonalTab.classList.remove("active");
       profileEmrContent.classList.add("active");
@@ -1701,6 +1701,14 @@ async function loadSessionsFromAPI(clientId) {
     );
     console.log("📋 First session emr_type_id:", sessions[0]?.emr_type_id);
 
+    // Update the sessions cache
+    chrome.storage.local.get(["sessionsCache"], (cacheResult) => {
+      const sessionsCache = cacheResult.sessionsCache || {};
+      sessionsCache[clientId] = sessions;
+      chrome.storage.local.set({ sessionsCache });
+      console.log("✅ Updated sessions cache for client:", clientId);
+    });
+
     // Update the sessions list with real data
     if (sessions && sessions.length > 0) {
       await renderSessionsList(sessions);
@@ -1788,7 +1796,7 @@ function setupViewSessionButtons() {
   // Get fresh references after cloning
   const freshViewSessionBtns = document.querySelectorAll(".view-session-btn");
   freshViewSessionBtns.forEach((btn) => {
-    btn.addEventListener("click", function (e) {
+    btn.addEventListener("click", async function (e) {
       e.stopPropagation();
       const sessionId = this.getAttribute("data-session-id");
       console.log("📋 View Session clicked for session ID:", sessionId);
@@ -1799,31 +1807,76 @@ function setupViewSessionButtons() {
         // Get the real session data from storage
         chrome.storage.local.get(
           ["sessionsCache", "currentClient"],
-          function (result) {
+          async function (result) {
             if (result.sessionsCache && result.currentClient) {
               const clientId = result.currentClient.clientId;
               const clientSessions = result.sessionsCache[clientId];
 
               if (clientSessions) {
                 // Find the session with matching ID
-                const session = clientSessions.find((s) => s.id === sessionId);
+                const session = clientSessions.find(
+                  (s) => s.id === sessionId || s.id == sessionId
+                );
                 if (session) {
                   console.log("📋 Found real session data:", session);
                   showSessionDetail(session);
                 } else {
-                  console.error("❌ Session not found in cache");
+                  console.log(
+                    "⚠️ Session not found in cache, fetching from API..."
+                  );
+                  // Fallback: fetch session from API if not in cache
+                  await fetchAndShowSession(sessionId);
                 }
               } else {
-                console.error("❌ No cached sessions found");
+                console.log(
+                  "⚠️ No cached sessions found, fetching from API..."
+                );
+                // Fallback: fetch session from API if cache is empty
+                await fetchAndShowSession(sessionId);
               }
             } else {
-              console.error("❌ No sessions cache or current client found");
+              console.log(
+                "⚠️ No sessions cache or current client found, fetching from API..."
+              );
+              // Fallback: fetch session from API
+              await fetchAndShowSession(sessionId);
             }
           }
         );
       }
     });
   });
+}
+
+// Helper function to fetch session from API and show it
+async function fetchAndShowSession(sessionId) {
+  try {
+    const tokenResult = await chrome.storage.local.get(["accessToken"]);
+    if (!tokenResult.accessToken) {
+      showErrorMessage("Please log in again");
+      return;
+    }
+
+    const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (response.ok) {
+      const session = await response.json();
+      console.log("✅ Fetched session from API:", session);
+      showSessionDetail(session);
+    } else {
+      console.error("❌ Failed to fetch session:", response.status);
+      showErrorMessage("Failed to load session. Please try again.");
+    }
+  } catch (error) {
+    console.error("❌ Error fetching session:", error);
+    showErrorMessage("Failed to load session. Please try again.");
+  }
 }
 
 function updateClientDetailSessionCount(sessionCount) {
@@ -2101,6 +2154,7 @@ function navigateToPage(page) {
     loadSessionAINotes();
   } else if (page === "emr-types") {
     loadDocumentationMethods();
+    checkPendingEMRRequests();
   } else if (page === "auto-detected-session") {
     // Auto-detected session page loaded by populateAutoDetectedSessionPage()
   } else if (page === "client-detail") {
@@ -2186,6 +2240,91 @@ async function loadDocumentationMethods() {
   } catch (error) {
     console.error("❌ Error loading documentation methods:", error);
     showErrorMessage(`Failed to load documentation methods: ${error.message}`);
+  }
+}
+
+// Check for pending EMR requests created by the logged-in user
+async function checkPendingEMRRequests() {
+  try {
+    console.log("🔍 Checking for pending EMR requests...");
+
+    // Get access token
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      console.log("⚠️ No access token, skipping pending request check");
+      return;
+    }
+
+    // Step 1: Get user ID from profile
+    const profileResponse = await fetch(`${API_BASE_URL}/me`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!profileResponse.ok) {
+      console.error("❌ Failed to fetch profile:", profileResponse.status);
+      return;
+    }
+
+    const profileData = await profileResponse.json();
+    const userId = profileData.id || profileData.user_id;
+
+    if (!userId) {
+      console.log("⚠️ No user ID found in profile");
+      return;
+    }
+
+    console.log("👤 User ID:", userId);
+
+    // Step 2: Fetch all EMR types
+    const emrTypesResponse = await fetch(`${API_BASE_URL}/emr-types/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!emrTypesResponse.ok) {
+      console.error("❌ Failed to fetch EMR types:", emrTypesResponse.status);
+      return;
+    }
+
+    const emrTypes = await emrTypesResponse.json();
+    console.log("📋 Fetched EMR types:", emrTypes.length);
+
+    // Step 3: Check for pending requests matching criteria
+    const pendingRequests = emrTypes.filter((emrType) => {
+      const matchesUserId =
+        emrType.user_id === userId || emrType.user_id == userId;
+      const createdFromChrome = emrType.created_from_chrome === true;
+      const isNotActive =
+        emrType.status !== "active" && emrType.status !== "Active";
+
+      return matchesUserId && createdFromChrome && isNotActive;
+    });
+
+    console.log("📋 Pending EMR requests found:", pendingRequests.length);
+
+    // Step 4: Display message if there are pending requests
+    const messageElement = document.getElementById(
+      "pending-emr-request-message"
+    );
+    if (messageElement) {
+      if (pendingRequests.length > 0) {
+        messageElement.style.display = "block";
+        console.log("✅ Displaying pending EMR request message");
+      } else {
+        messageElement.style.display = "none";
+        console.log("✅ No pending requests, hiding message");
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error checking pending EMR requests:", error);
+    // Don't show error to user, just log it
   }
 }
 
@@ -2709,21 +2848,41 @@ function setupSessionTabHandlers() {
 
     freshSessionActivityTab.addEventListener("click", function () {
       // Switch to AI Notes tab
-      freshSessionActivityTab.classList.add("active");
-      freshSessionInfoTab.classList.remove("active");
-      sessionActivityContent.classList.add("active");
-      sessionInfoContent.classList.remove("active");
-
-      // Hide session detected banner and session details for AI Notes tab
-      hideSessionDetailsForAINotes();
-
-      // Update buttons for AI Notes tab
-      updateSessionButtons("ai-notes");
+      switchToAINotesTab();
     });
 
     console.log("✅ Session tab handlers set up");
   } else {
     console.error("❌ Session tab elements not found");
+  }
+}
+
+// Helper function to switch to AI Notes tab
+function switchToAINotesTab() {
+  const sessionInfoTab = document.getElementById("session-info-tab");
+  const sessionActivityTab = document.getElementById("session-activity-tab");
+  const sessionInfoContent = document.getElementById("session-info-content");
+  const sessionActivityContent = document.getElementById(
+    "session-activity-content"
+  );
+
+  if (
+    sessionInfoTab &&
+    sessionActivityTab &&
+    sessionInfoContent &&
+    sessionActivityContent
+  ) {
+    // Switch to AI Notes tab
+    sessionActivityTab.classList.add("active");
+    sessionInfoTab.classList.remove("active");
+    sessionActivityContent.classList.add("active");
+    sessionInfoContent.classList.remove("active");
+
+    // Hide session detected banner and session details for AI Notes tab
+    hideSessionDetailsForAINotes();
+
+    // Update buttons for AI Notes tab
+    updateSessionButtons("ai-notes");
   }
 }
 
@@ -3156,6 +3315,9 @@ async function regenerateAINotesWithFeedback(sessionId) {
 
       showFeedbackStatus("AI notes updated successfully!", "success");
       setTimeout(() => showFeedbackStatus("", ""), 3000);
+
+      // Switch to AI Notes tab to show the regenerated content
+      switchToAINotesTab();
     }, 2000);
   } catch (error) {
     console.error("❌ Error regenerating AI notes:", error);
@@ -3499,6 +3661,12 @@ function renderDynamicFields(dynamicFields) {
       }
     });
 
+    // Add divider line before Modality fields
+    const dividerLine = document.createElement("div");
+    dividerLine.style.cssText =
+      "width: 100%; height: 1px; background-color: #e5e7eb; margin: 4px 0;";
+    dynamicFieldsSection.appendChild(dividerLine);
+
     // Add Modality and Modality Steps fields (right after confirmed results, before manual fields)
     await addModalityFieldsToView(session, dynamicFields, dynamicFieldsSection);
 
@@ -3656,15 +3824,24 @@ function createDynamicFieldElement(fieldName, fieldValue, fieldType) {
   return createAutoSessionViewFieldElement(fieldName, fieldValue, fieldType);
 }
 
+// Helper function to format field names to Title Case for UI display
+function formatFieldNameForDisplay(fieldName) {
+  if (!fieldName) return "";
+  // Convert snake_case and kebab-case to spaces, then Title Case
+  return fieldName
+    .replace(/_/g, " ")
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (l) => l.toUpperCase())
+    .trim();
+}
+
 // Function to create a plain-text view field for auto-detected session page
 function createAutoSessionViewFieldElement(fieldName, fieldValue, fieldType) {
   const fieldElement = document.createElement("div");
   fieldElement.className = "session-detail-item dynamic-field view-mode";
 
   // Format field name (convert snake_case to Title Case)
-  const formattedName = fieldName
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (l) => l.toUpperCase());
+  const formattedName = formatFieldNameForDisplay(fieldName);
 
   // Handle booleans as a read-only checkbox (still makes sense visually)
   if (fieldType === "boolean") {
@@ -3906,7 +4083,7 @@ function updateProfilePage(profileData, additionalData = null) {
     console.error("❌ Status element not found!");
   }
 
-  // Update EMR Info section - show all pairs as tags
+  // Update EMR Personalization section - show all pairs as tags
   const emrSystemElement = document.getElementById("profile-emr-system");
   if (emrSystemElement) {
     if (
@@ -3954,14 +4131,14 @@ function updateProfilePage(profileData, additionalData = null) {
         const skill = additionalData.copingSkills.find((s) => s.id === skillId);
         if (skill) {
           const badge = document.createElement("span");
-          badge.className = "info-badge";
+          badge.className = "coping-skill-badge";
           badge.textContent = skill.short_description || skill.name || skillId;
           badge.title = skill.long_description || skill.description || ""; // Tooltip on hover
           copingSkillsContainer.appendChild(badge);
         } else {
           // If skill not found, show ID as fallback
           const badge = document.createElement("span");
-          badge.className = "info-badge";
+          badge.className = "coping-skill-badge";
           badge.textContent = `Unknown (${skillId})`;
           badge.title = "Skill not found in database";
           copingSkillsContainer.appendChild(badge);
@@ -3970,7 +4147,7 @@ function updateProfilePage(profileData, additionalData = null) {
     } else {
       // Show "Not specified" if no coping skills
       copingSkillsContainer.innerHTML =
-        '<span class="info-badge">Not specified</span>';
+        '<span class="coping-skill-badge">Not specified</span>';
     }
   }
 
@@ -3994,7 +4171,7 @@ function updateProfilePage(profileData, additionalData = null) {
         );
         if (specialty) {
           const badge = document.createElement("span");
-          badge.className = "info-badge";
+          badge.className = "clinical-specialty-badge";
           badge.textContent =
             specialty.short_description || specialty.name || specialtyId;
           badge.title =
@@ -4003,7 +4180,7 @@ function updateProfilePage(profileData, additionalData = null) {
         } else {
           // If specialty not found, show ID as fallback
           const badge = document.createElement("span");
-          badge.className = "info-badge";
+          badge.className = "clinical-specialty-badge";
           badge.textContent = `Unknown (${specialtyId})`;
           badge.title = "Specialty not found in database";
           specialtiesContainer.appendChild(badge);
@@ -4012,22 +4189,31 @@ function updateProfilePage(profileData, additionalData = null) {
     } else {
       // Show "Not specified" if no clinical specialties
       specialtiesContainer.innerHTML =
-        '<span class="info-badge">Not specified</span>';
+        '<span class="clinical-specialty-badge">Not specified</span>';
     }
   }
 
-  // Update type writing - show as badges
+  // Update type writing - show as blue tags (like EMR)
   const typeWritingContainer = document.getElementById("profile-type-writing");
   if (typeWritingContainer) {
     if (profileData.type_writing && profileData.type_writing.length > 0) {
       typeWritingContainer.innerHTML = "";
+      // Create container for tags
+      const tagsContainer = document.createElement("div");
+      tagsContainer.className = "emr-tags-container";
+      tagsContainer.style.display = "flex";
+      tagsContainer.style.flexWrap = "wrap";
+      tagsContainer.style.gap = "4px";
+      tagsContainer.style.justifyContent = "flex-end";
 
       profileData.type_writing.forEach((type) => {
-        const badge = document.createElement("span");
-        badge.className = "info-badge";
-        badge.textContent = type;
-        typeWritingContainer.appendChild(badge);
+        const tag = document.createElement("span");
+        tag.className = "emr-view-tag";
+        tag.textContent = type;
+        tagsContainer.appendChild(tag);
       });
+
+      typeWritingContainer.appendChild(tagsContainer);
     } else {
       typeWritingContainer.textContent = "Not specified";
     }
@@ -4044,7 +4230,33 @@ function updateProfilePage(profileData, additionalData = null) {
     );
 
     if (companyName) companyName.textContent = profileData.company.name || "";
-    if (companyEmr) companyEmr.textContent = profileData.company.emr || "";
+    if (companyEmr) {
+      // Handle emr as array - display as blue tags
+      const emrArray = profileData.company.emr;
+      if (emrArray && Array.isArray(emrArray) && emrArray.length > 0) {
+        // Clear existing content
+        companyEmr.innerHTML = "";
+        // Create container for tags
+        const tagsContainer = document.createElement("div");
+        tagsContainer.className = "emr-tags-container";
+        tagsContainer.style.display = "flex";
+        tagsContainer.style.flexWrap = "wrap";
+        tagsContainer.style.gap = "4px";
+        tagsContainer.style.justifyContent = "flex-end";
+
+        // Create a tag for each EMR
+        emrArray.forEach((emrValue) => {
+          const tag = document.createElement("span");
+          tag.className = "emr-view-tag";
+          tag.textContent = emrValue;
+          tagsContainer.appendChild(tag);
+        });
+
+        companyEmr.appendChild(tagsContainer);
+      } else {
+        companyEmr.textContent = "Not specified";
+      }
+    }
     if (companyIndustry)
       companyIndustry.textContent = profileData.company.industry || "";
     if (companyAddress)
@@ -4198,6 +4410,30 @@ function editPersonalInfo() {
         optionElement.textContent = option;
         input.appendChild(optionElement);
       });
+    } else if (fieldName === "user-type") {
+      input = document.createElement("select");
+      const defaultOption = document.createElement("option");
+      defaultOption.value = "";
+      defaultOption.textContent = "Select user type...";
+      input.appendChild(defaultOption);
+
+      const userTypeOptions = [
+        "Technology",
+        "Healthcare",
+        "Finance",
+        "Education",
+        "Retail",
+        "Energy",
+        "Nonprofit",
+        "Other",
+      ];
+
+      userTypeOptions.forEach((option) => {
+        const optionElement = document.createElement("option");
+        optionElement.value = option;
+        optionElement.textContent = option;
+        input.appendChild(optionElement);
+      });
     } else if (fieldName === "coping-skills") {
       // Create container for coping skills management
       const container = document.createElement("div");
@@ -4230,7 +4466,7 @@ function editPersonalInfo() {
       // Add new skill dropdown
       const addDiv = document.createElement("div");
       addDiv.className = "add-item";
-      addDiv.innerHTML = "<label>Add Coping Skill:</label>";
+      addDiv.innerHTML = "<label>Select Coping Skill:</label>";
 
       const select = document.createElement("select");
       select.id = "add-coping-skill";
@@ -4299,7 +4535,7 @@ function editPersonalInfo() {
       // Add new specialty dropdown
       const addDiv = document.createElement("div");
       addDiv.className = "add-item";
-      addDiv.innerHTML = "<label>Add Clinical Specialty:</label>";
+      addDiv.innerHTML = "<label>Select Clinical Specialty:</label>";
 
       const select = document.createElement("select");
       select.id = "add-clinical-specialty";
@@ -4406,12 +4642,12 @@ function editPersonalInfo() {
 }
 
 function editEMRInfo() {
-  console.log("✏️ Editing EMR Info...");
+  console.log("✏️ Editing EMR Personalization...");
 
   const emrInfoSection = document.getElementById("emr-info-content");
   if (!emrInfoSection) {
     console.error(
-      "❌ EMR Info section not found. Make sure you're on the profile page."
+      "❌ EMR Personalization section not found. Make sure you're on the profile page."
     );
     showErrorMessage("Please navigate to the Profile page first.");
     return;
@@ -4448,7 +4684,7 @@ function editEMRInfo() {
     const existingPairsSection = document.createElement("div");
     existingPairsSection.className = "existing-pairs-section";
     existingPairsSection.innerHTML = `
-      <h5>Existing Pairs:</h5>
+      <h5>Existing EMR Personalizations:</h5>
       <div class="pairs-container" id="existing-pairs-container"></div>
     `;
 
@@ -4504,6 +4740,9 @@ function editEMRInfo() {
     <button class="btn btn-primary add-new-pair-btn" id="add-new-emr-pair-btn" style="width: 100%; padding: 12px 20px; font-size: 14px; background: white; border: 2px dashed #1976d2; border-radius: 6px; color: #1976d2; cursor: pointer; font-weight: 500; transition: all 0.2s ease;">
       ➕ Add New Pair
     </button>
+    <div style="text-align: center; margin-top: 12px; color: #6B7280; font-size: 13px; font-weight: 500;">
+      Personalize Your Notes
+    </div>
   `;
   emrInfoSection.appendChild(addNewPairBtnContainer);
 
@@ -4522,7 +4761,7 @@ function editEMRInfo() {
     );
   }
 
-  // Add other EMR Info fields (Coping Skills, Clinical Specialties, Type Writing)
+  // Add other EMR Personalization fields (Coping Skills, Clinical Specialties, Type Writing)
   const otherFieldsSection = document.createElement("div");
   otherFieldsSection.style.marginTop = "20px";
   otherFieldsSection.innerHTML = `
@@ -4530,24 +4769,19 @@ function editEMRInfo() {
       <label style="display: block; font-weight: 600; color: #495057; margin-bottom: 8px; font-size: 14px;">Coping Skills:</label>
       <div class="badges-container" id="edit-coping-skills" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;"></div>
       <select id="add-coping-skill" class="edit-input">
-        <option value="">Add Coping Skill...</option>
+        <option value="">Select Coping Skill...</option>
       </select>
     </div>
     <div class="form-group" style="margin-bottom: 16px;">
       <label style="display: block; font-weight: 600; color: #495057; margin-bottom: 8px; font-size: 14px;">Clinical Specialties:</label>
       <div class="badges-container" id="edit-clinical-specialties" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px;"></div>
       <select id="add-clinical-specialty" class="edit-input">
-        <option value="">Add Clinical Specialty...</option>
+        <option value="">Select Clinical Specialty...</option>
       </select>
     </div>
     <div class="form-group" style="margin-bottom: 16px;">
       <label style="display: block; font-weight: 600; color: #495057; margin-bottom: 8px; font-size: 14px;">Type Writing:</label>
-      <select id="edit-type-writing" class="edit-input">
-        <option value="">Select type writing...</option>
-        <option value="Soft">Soft</option>
-        <option value="Medium">Medium</option>
-        <option value="Hard">Hard</option>
-      </select>
+      <div id="type-writing-dropdown-container" class="array-edit-container"></div>
     </div>
   `;
   emrInfoSection.appendChild(otherFieldsSection);
@@ -4626,15 +4860,180 @@ function editEMRInfo() {
     });
   }
 
-  // Set current Type Writing value
-  const typeWritingSelect = document.getElementById("edit-type-writing");
-  if (
-    typeWritingSelect &&
-    window.currentProfileData &&
-    window.currentProfileData.type_writing &&
-    window.currentProfileData.type_writing.length > 0
-  ) {
-    typeWritingSelect.value = window.currentProfileData.type_writing[0];
+  // Create custom dropdown for Type Writing (multi-select like EMR)
+  const typeWritingContainer = document.getElementById(
+    "type-writing-dropdown-container"
+  );
+  if (typeWritingContainer) {
+    // Store original Type Writing values for cancel
+    const currentTypeWritingArray = Array.isArray(
+      window.currentProfileData?.type_writing
+    )
+      ? window.currentProfileData.type_writing
+      : window.currentProfileData?.type_writing
+      ? [window.currentProfileData.type_writing]
+      : [];
+
+    window.originalTypeWriting = JSON.parse(
+      JSON.stringify(currentTypeWritingArray)
+    );
+
+    // Create custom dropdown wrapper
+    const dropdownWrapper = document.createElement("div");
+    dropdownWrapper.className = "custom-emr-dropdown-wrapper";
+
+    // Create the dropdown button/input
+    const dropdownButton = document.createElement("div");
+    dropdownButton.className = "custom-emr-dropdown-button";
+
+    // Create container for selected tags
+    const selectedTagsContainer = document.createElement("div");
+    selectedTagsContainer.className = "dropdown-selected-tags";
+
+    // Create placeholder
+    const placeholder = document.createElement("span");
+    placeholder.className = "dropdown-placeholder";
+    placeholder.textContent = "Search options...";
+
+    // Create arrow icon
+    const arrowIcon = document.createElement("span");
+    arrowIcon.className = "dropdown-arrow-icon";
+    arrowIcon.textContent = "▼";
+
+    // Function to update button content
+    const updateTypeWritingButton = () => {
+      const currentArray = Array.isArray(
+        window.currentProfileData?.type_writing
+      )
+        ? window.currentProfileData.type_writing
+        : window.currentProfileData?.type_writing
+        ? [window.currentProfileData.type_writing]
+        : [];
+
+      selectedTagsContainer.innerHTML = "";
+
+      if (currentArray.length > 0) {
+        currentArray.forEach((value) => {
+          const tag = document.createElement("span");
+          tag.className = "dropdown-tag";
+          tag.innerHTML = `
+            <span class="dropdown-tag-text">${value}</span>
+            <button class="dropdown-tag-remove" data-value="${value}" title="Remove">×</button>
+          `;
+          selectedTagsContainer.appendChild(tag);
+        });
+
+        // Add event listeners to remove buttons
+        selectedTagsContainer
+          .querySelectorAll(".dropdown-tag-remove")
+          .forEach((btn) => {
+            btn.addEventListener("click", function (e) {
+              e.stopPropagation();
+              const typeWritingValue = this.getAttribute("data-value");
+              // Find the menu item and toggle it to remove
+              const menuItem = dropdownMenu.querySelector(
+                `[data-value="${typeWritingValue}"]`
+              );
+              if (menuItem) {
+                toggleTypeWritingSelection(
+                  typeWritingValue,
+                  menuItem,
+                  dropdownMenu,
+                  updateTypeWritingButton
+                );
+              }
+            });
+          });
+
+        placeholder.style.display = "none";
+      } else {
+        placeholder.style.display = "inline";
+      }
+    };
+
+    // Initial update
+    updateTypeWritingButton();
+
+    dropdownButton.appendChild(selectedTagsContainer);
+    dropdownButton.appendChild(placeholder);
+    dropdownButton.appendChild(arrowIcon);
+
+    // Create the dropdown menu
+    const dropdownMenu = document.createElement("div");
+    dropdownMenu.className = "custom-emr-dropdown-menu";
+    dropdownMenu.style.display = "none";
+
+    // Type Writing options
+    const typeWritingOptions = ["Soft", "Medium", "Hard"];
+
+    // Add all options to dropdown (show selected with checkmarks)
+    typeWritingOptions.forEach((optionValue) => {
+      const isSelected = currentTypeWritingArray.includes(optionValue);
+
+      const menuItem = document.createElement("div");
+      menuItem.className = `custom-emr-dropdown-item ${
+        isSelected ? "selected" : ""
+      }`;
+      menuItem.dataset.value = optionValue;
+      menuItem.innerHTML = `
+        <span class="item-text">${optionValue}</span>
+        ${isSelected ? '<span class="checkmark">✓</span>' : ""}
+      `;
+
+      // Toggle selection on click
+      menuItem.addEventListener("click", function (e) {
+        e.stopPropagation();
+        toggleTypeWritingSelection(
+          optionValue,
+          menuItem,
+          dropdownMenu,
+          updateTypeWritingButton
+        );
+      });
+
+      dropdownMenu.appendChild(menuItem);
+    });
+
+    dropdownWrapper.appendChild(dropdownButton);
+    dropdownWrapper.appendChild(dropdownMenu);
+    typeWritingContainer.appendChild(dropdownWrapper);
+
+    // Toggle dropdown on button click
+    let clickOutsideHandler = null;
+    dropdownButton.addEventListener("click", function (e) {
+      e.stopPropagation();
+      const isOpen = dropdownMenu.style.display === "block";
+      dropdownMenu.style.display = isOpen ? "none" : "block";
+      if (!isOpen) {
+        dropdownButton.classList.add("active");
+        clickOutsideHandler = function (e) {
+          if (!dropdownWrapper.contains(e.target)) {
+            dropdownMenu.style.display = "none";
+            dropdownButton.classList.remove("active");
+            document.removeEventListener("click", clickOutsideHandler);
+            clickOutsideHandler = null;
+          }
+        };
+        setTimeout(() => {
+          document.addEventListener("click", clickOutsideHandler);
+        }, 0);
+      } else {
+        dropdownButton.classList.remove("active");
+        if (clickOutsideHandler) {
+          document.removeEventListener("click", clickOutsideHandler);
+          clickOutsideHandler = null;
+        }
+      }
+    });
+
+    // Store reference for updates
+    window.currentTypeWritingDropdown = {
+      wrapper: dropdownWrapper,
+      menu: dropdownMenu,
+      button: dropdownButton,
+      currentArray: currentTypeWritingArray,
+      updateButton: updateTypeWritingButton,
+    };
   }
 
   // Populate Coping Skills dropdown
@@ -4818,26 +5217,26 @@ function editEMRInfo() {
     });
   }
 
-  // Add save/cancel buttons for EMR Info
+  // Add save/cancel buttons for EMR Personalization
   const buttonContainer = document.createElement("div");
   buttonContainer.className = "edit-buttons";
   buttonContainer.style.marginTop = "20px";
   buttonContainer.style.paddingTop = "20px";
   buttonContainer.style.borderTop = "1px solid #e9ecef";
   buttonContainer.innerHTML = `
-    <button class="btn btn-primary" id="save-emr-info-btn" style="display: block !important; visibility: visible !important;">Save EMR Info</button>
+    <button class="btn btn-primary" id="save-emr-info-btn" style="display: block !important; visibility: visible !important;">Save</button>
     <button class="btn btn-secondary" id="cancel-emr-info-btn" style="display: block !important; visibility: visible !important;">Cancel</button>
   `;
 
   emrInfoSection.appendChild(buttonContainer);
-  console.log("✅ EMR Info Save/Cancel buttons added");
+  console.log("✅ EMR Personalization Save/Cancel buttons added");
   console.log("🔍 Button container HTML:", buttonContainer.innerHTML);
   console.log(
-    "🔍 EMR Info section children count:",
+    "🔍 EMR Personalization section children count:",
     emrInfoSection.children.length
   );
 
-  // Add event listeners for EMR Info buttons using event delegation
+  // Add event listeners for EMR Personalization buttons using event delegation
 
   // Add event listeners for Save/Cancel buttons
   const saveEMRBtn = document.getElementById("save-emr-info-btn");
@@ -5142,8 +5541,11 @@ function addNewEMRPair() {
     // Remove all options except the first (placeholder)
     selectElement.innerHTML = '<option value="">Select EMR Type...</option>';
 
+    // Get filtered EMR types (only those in company.emr)
+    const filteredEmrTypes = getFilteredEmrTypes();
+
     // Repopulate with available options
-    window.profileAdditionalData.emrTypes.forEach((emrType) => {
+    filteredEmrTypes.forEach((emrType) => {
       if (!usedIds.has(emrType.id)) {
         const option = document.createElement("option");
         option.value = emrType.id;
@@ -5268,20 +5670,19 @@ function refreshAllDropdowns() {
     }
   });
 
+  // Get filtered EMR types (only those in company.emr)
+  const filteredEmrTypes = getFilteredEmrTypes();
+
   // Refresh all dropdowns
   allForms.forEach((form) => {
     const select = form.querySelector(".emr-type-select");
-    if (
-      select &&
-      window.profileAdditionalData &&
-      window.profileAdditionalData.emrTypes
-    ) {
+    if (select && filteredEmrTypes.length > 0) {
       const currentValue = select.value;
 
       // Clear and repopulate
       select.innerHTML = '<option value="">Select EMR Type...</option>';
 
-      window.profileAdditionalData.emrTypes.forEach((emrType) => {
+      filteredEmrTypes.forEach((emrType) => {
         if (!usedIds.has(emrType.id)) {
           const option = document.createElement("option");
           option.value = emrType.id;
@@ -5346,6 +5747,30 @@ function updateExistingPairsDisplay() {
   });
 }
 
+// Helper function to filter EMR types based on company.emr
+function getFilteredEmrTypes() {
+  if (!window.profileAdditionalData || !window.profileAdditionalData.emrTypes) {
+    return [];
+  }
+
+  // Get company EMR array
+  const companyEmrArray = Array.isArray(window.currentProfileData?.company?.emr)
+    ? window.currentProfileData.company.emr
+    : window.currentProfileData?.company?.emr
+    ? [window.currentProfileData.company.emr]
+    : [];
+
+  // If no company EMR specified, return empty array (show nothing)
+  if (companyEmrArray.length === 0) {
+    return [];
+  }
+
+  // Filter EMR types to only include those in company.emr
+  return window.profileAdditionalData.emrTypes.filter((emrType) =>
+    companyEmrArray.includes(emrType.name)
+  );
+}
+
 function populateEMRDropdowns(pairFormId) {
   console.log("🔍 Populating dropdowns for:", pairFormId);
 
@@ -5408,11 +5833,18 @@ function populateEMRDropdowns(pairFormId) {
     }
   });
 
+  // Get filtered EMR types (only those in company.emr)
+  const filteredEmrTypes = getFilteredEmrTypes();
+  console.log(
+    "📋 Filtered EMR Types based on company.emr:",
+    filteredEmrTypes.length
+  );
+
   // Populate EMR Types (excluding already-used ones)
-  if (window.profileAdditionalData && window.profileAdditionalData.emrTypes) {
+  if (filteredEmrTypes.length > 0) {
     console.log("📋 Populating EMR Types dropdown...");
     let addedCount = 0;
-    window.profileAdditionalData.emrTypes.forEach((emrType) => {
+    filteredEmrTypes.forEach((emrType) => {
       // Only add EMR Type if it hasn't been used yet
       if (!usedEmrTypeIds.has(emrType.id)) {
         const option = document.createElement("option");
@@ -5515,13 +5947,13 @@ function removeExistingPair(index) {
 }
 
 async function saveEMRInfo() {
-  console.log("💾 Saving EMR Info...");
+  console.log("💾 Saving EMR Personalization...");
 
   try {
     // Get token
     const tokenResult = await chrome.storage.local.get(["accessToken"]);
     if (!tokenResult.accessToken) {
-      showErrorMessage("Please log in again to save EMR Info.");
+      showErrorMessage("Please log in again to save EMR Personalization.");
       return;
     }
 
@@ -5561,9 +5993,14 @@ async function saveEMRInfo() {
       }
     });
 
-    // Get Type Writing value
-    const typeWritingSelect = document.getElementById("edit-type-writing");
-    const typeWritingValue = typeWritingSelect ? typeWritingSelect.value : null;
+    // Get Type Writing values (now an array from custom dropdown)
+    const typeWritingArray = Array.isArray(
+      window.currentProfileData?.type_writing
+    )
+      ? window.currentProfileData.type_writing
+      : window.currentProfileData?.type_writing
+      ? [window.currentProfileData.type_writing]
+      : [];
 
     // Combine existing pairs with new unsaved pairs
     const allPairs = [
@@ -5578,12 +6015,12 @@ async function saveEMRInfo() {
       coping_skills: window.currentProfileData.coping_skills || [],
       clinical_specialties:
         window.currentProfileData.clinical_specialties || [],
-      type_writing: typeWritingValue ? [typeWritingValue] : [],
+      type_writing: typeWritingArray,
     };
 
     console.log("📦 Saving pairs:", allPairs);
 
-    // Make API call to save EMR Info
+    // Make API call to save EMR Personalization
     const response = await fetch(`${API_BASE_URL}/me`, {
       method: "PUT",
       headers: {
@@ -5603,13 +6040,13 @@ async function saveEMRInfo() {
     }
 
     const updatedData = await response.json();
-    console.log("✅ EMR Info updated:", updatedData);
+    console.log("✅ EMR Personalization updated:", updatedData);
 
     // Update stored data
     window.currentProfileData = updatedData;
 
     // Show success message
-    showSuccessMessage("EMR Info saved successfully!");
+    showSuccessMessage("EMR Personalization saved successfully!");
 
     // Restore the original HTML structure so updateProfilePage can populate it
     const emrInfoSection = document.getElementById("emr-info-content");
@@ -5642,7 +6079,12 @@ async function saveEMRInfo() {
           <span class="detail-value" id="profile-type-writing">Loading...</span>
         </div>
       `;
-      console.log("✅ Restored EMR Info view mode HTML structure");
+      console.log("✅ Restored EMR Personalization view mode HTML structure");
+    }
+
+    // Clear stored original Type Writing after successful save
+    if (window.originalTypeWriting) {
+      delete window.originalTypeWriting;
     }
 
     // Reload profile page to populate the view mode with updated data
@@ -5654,19 +6096,27 @@ async function saveEMRInfo() {
       emrBottomBtn.style.display = "flex";
     }
 
-    showSuccessMessage("EMR Info saved successfully!");
+    showSuccessMessage("EMR Personalization saved successfully!");
 
     // Re-fetch and update EMR URL cache after saving
     await fetchAndCacheEMRUrl(tokenResult.accessToken);
     console.log("✅ EMR URL cache updated after save");
   } catch (error) {
-    console.error("❌ Error saving EMR Info:", error);
-    showErrorMessage("Failed to save EMR Info. Please try again.");
+    console.error("❌ Error saving EMR Personalization:", error);
+    showErrorMessage("Failed to save EMR Personalization. Please try again.");
   }
 }
 
 function cancelEditEMRInfo() {
-  console.log("❌ Canceling EMR Info edit...");
+  console.log("❌ Canceling EMR Personalization edit...");
+
+  // Restore original Type Writing values if they were stored
+  if (window.originalTypeWriting !== undefined) {
+    window.currentProfileData.type_writing = JSON.parse(
+      JSON.stringify(window.originalTypeWriting)
+    );
+    delete window.originalTypeWriting;
+  }
 
   // First, restore the original HTML structure so updateProfilePage can populate it
   const emrInfoSection = document.getElementById("emr-info-content");
@@ -5699,7 +6149,7 @@ function cancelEditEMRInfo() {
         <span class="detail-value" id="profile-type-writing">Loading...</span>
       </div>
     `;
-    console.log("✅ Restored EMR Info HTML structure");
+    console.log("✅ Restored EMR Personalization HTML structure");
   }
 
   // Now reload the profile data which will populate the restored structure
@@ -5711,7 +6161,7 @@ function cancelEditEMRInfo() {
     emrBottomBtn.style.display = "flex";
   }
 
-  console.log("✅ EMR Info edit cancelled - reloading profile data");
+  console.log("✅ EMR Personalization edit cancelled - reloading profile data");
 }
 
 // Save Personal Info function
@@ -6001,7 +6451,7 @@ function addClinicalSpecialty() {
 }
 
 // Edit Company Info function
-function editCompanyInfo() {
+async function editCompanyInfo() {
   console.log("✏️ Editing Company Info...");
 
   const companyInfoSection = document.getElementById("company-info-content");
@@ -6023,6 +6473,35 @@ function editCompanyInfo() {
   const bottomEditBtn = document.getElementById("edit-company-info-bottom-btn");
   if (bottomEditBtn) {
     bottomEditBtn.style.display = "none";
+  }
+
+  // Fetch EMR types if not already available
+  let emrTypes = [];
+  if (window.profileAdditionalData?.emrTypes) {
+    emrTypes = window.profileAdditionalData.emrTypes;
+    console.log("✅ Using cached EMR types:", emrTypes);
+  } else {
+    console.log("🔄 Fetching EMR types from API...");
+    try {
+      const result = await chrome.storage.local.get(["accessToken"]);
+      if (result.accessToken) {
+        const response = await fetch(`${API_BASE_URL}/emr-types/`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${result.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+        if (response.ok) {
+          emrTypes = await response.json();
+          console.log("✅ EMR types fetched:", emrTypes);
+        } else {
+          console.error("❌ Failed to fetch EMR types:", response.status);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Error fetching EMR types:", error);
+    }
   }
 
   // Handle status field specially - it should be a dropdown
@@ -6082,12 +6561,240 @@ function editCompanyInfo() {
       inactiveOption.textContent = "Inactive";
       input.appendChild(activeOption);
       input.appendChild(inactiveOption);
+    } else if (fieldName === "industry") {
+      input = document.createElement("select");
+      // Add placeholder option first
+      const placeholderOption = document.createElement("option");
+      placeholderOption.value = "";
+      placeholderOption.textContent = "Select a industry...";
+      input.appendChild(placeholderOption);
+      // Add industry options
+      const industryOptions = [
+        "Technology",
+        "Healthcare",
+        "Finance",
+        "Education",
+        "Retail",
+        "Energy",
+        "Nonprofit",
+        "Other",
+      ];
+      industryOptions.forEach((optionValue) => {
+        const option = document.createElement("option");
+        option.value = optionValue;
+        option.textContent = optionValue;
+        input.appendChild(option);
+      });
+    } else if (fieldName === "emr") {
+      // Create container for EMR multi-select management
+      const container = document.createElement("div");
+      container.className = "array-edit-container";
+
+      // Get current EMR values (handle both array and string for backward compatibility)
+      const currentEmrArray = Array.isArray(
+        window.currentProfileData.company?.emr
+      )
+        ? window.currentProfileData.company.emr
+        : window.currentProfileData.company?.emr
+        ? [window.currentProfileData.company.emr]
+        : [];
+
+      // Store original EMR array for cancel functionality
+      window.originalCompanyEmr = JSON.parse(JSON.stringify(currentEmrArray));
+
+      // Create custom dropdown that stays open and shows selected items inside
+      const addDiv = document.createElement("div");
+      addDiv.className = "add-item";
+
+      // Create custom dropdown wrapper
+      const dropdownWrapper = document.createElement("div");
+      dropdownWrapper.className = "custom-emr-dropdown-wrapper";
+
+      // Create the dropdown button/input
+      const dropdownButton = document.createElement("div");
+      dropdownButton.className = "custom-emr-dropdown-button";
+
+      // Create container for selected tags
+      const selectedTagsContainer = document.createElement("div");
+      selectedTagsContainer.className = "dropdown-selected-tags";
+
+      // Create placeholder
+      const placeholder = document.createElement("span");
+      placeholder.className = "dropdown-placeholder";
+      placeholder.textContent = "Search options...";
+
+      // Create arrow icon
+      const arrowIcon = document.createElement("span");
+      arrowIcon.className = "dropdown-arrow-icon";
+      arrowIcon.textContent = "▼";
+
+      // Function to update button content
+      const updateDropdownButton = () => {
+        const currentEmrArray = Array.isArray(
+          window.currentProfileData.company?.emr
+        )
+          ? window.currentProfileData.company.emr
+          : window.currentProfileData.company?.emr
+          ? [window.currentProfileData.company.emr]
+          : [];
+
+        selectedTagsContainer.innerHTML = "";
+
+        if (currentEmrArray.length > 0) {
+          currentEmrArray.forEach((emrValue) => {
+            const tag = document.createElement("span");
+            tag.className = "dropdown-tag";
+            tag.innerHTML = `
+              <span class="dropdown-tag-text">${emrValue}</span>
+              <button class="dropdown-tag-remove" data-emr="${emrValue}" title="Remove">×</button>
+            `;
+            selectedTagsContainer.appendChild(tag);
+          });
+
+          // Add event listeners to remove buttons
+          selectedTagsContainer
+            .querySelectorAll(".dropdown-tag-remove")
+            .forEach((btn) => {
+              btn.addEventListener("click", function (e) {
+                e.stopPropagation();
+                e.preventDefault();
+                const emrName = this.getAttribute("data-emr");
+                // Find the menu item and toggle it to remove
+                const menuItem = dropdownMenu.querySelector(
+                  `[data-value="${emrName}"]`
+                );
+                if (menuItem) {
+                  toggleEmrSelection(emrName, menuItem, dropdownMenu);
+                }
+              });
+            });
+
+          placeholder.style.display = "none";
+        } else {
+          placeholder.style.display = "inline";
+        }
+      };
+
+      // Initial update
+      updateDropdownButton();
+
+      dropdownButton.appendChild(selectedTagsContainer);
+      dropdownButton.appendChild(placeholder);
+      dropdownButton.appendChild(arrowIcon);
+
+      // Create the dropdown menu
+      const dropdownMenu = document.createElement("div");
+      dropdownMenu.className = "custom-emr-dropdown-menu";
+      dropdownMenu.style.display = "none";
+
+      // Add all EMR types to dropdown (show selected with checkmarks)
+      emrTypes.forEach((emrType) => {
+        const emrName = emrType.name || emrType.id || "Unknown";
+        const isSelected = currentEmrArray.includes(emrName);
+
+        const menuItem = document.createElement("div");
+        menuItem.className = `custom-emr-dropdown-item ${
+          isSelected ? "selected" : ""
+        }`;
+        menuItem.dataset.value = emrName;
+        menuItem.innerHTML = `
+          <span class="item-text">${emrName}</span>
+          ${isSelected ? '<span class="checkmark">✓</span>' : ""}
+        `;
+
+        // Toggle selection on click
+        menuItem.addEventListener("click", function (e) {
+          e.stopPropagation();
+          toggleEmrSelection(emrName, menuItem, dropdownMenu);
+        });
+
+        dropdownMenu.appendChild(menuItem);
+      });
+
+      dropdownWrapper.appendChild(dropdownButton);
+      dropdownWrapper.appendChild(dropdownMenu);
+      addDiv.appendChild(dropdownWrapper);
+      container.appendChild(addDiv);
+
+      // Toggle dropdown on button click
+      let clickOutsideHandler = null;
+      dropdownButton.addEventListener("click", function (e) {
+        e.stopPropagation();
+        const isOpen = dropdownMenu.style.display === "block";
+        dropdownMenu.style.display = isOpen ? "none" : "block";
+        if (!isOpen) {
+          dropdownButton.classList.add("active");
+          // Add click outside handler when opening
+          clickOutsideHandler = function (e) {
+            if (!dropdownWrapper.contains(e.target)) {
+              dropdownMenu.style.display = "none";
+              dropdownButton.classList.remove("active");
+              document.removeEventListener("click", clickOutsideHandler);
+              clickOutsideHandler = null;
+            }
+          };
+          // Use setTimeout to avoid immediate closure
+          setTimeout(() => {
+            document.addEventListener("click", clickOutsideHandler);
+          }, 0);
+        } else {
+          dropdownButton.classList.remove("active");
+          if (clickOutsideHandler) {
+            document.removeEventListener("click", clickOutsideHandler);
+            clickOutsideHandler = null;
+          }
+        }
+      });
+
+      // Store reference for updates (after all elements are created)
+      window.currentEmrDropdown = {
+        wrapper: dropdownWrapper,
+        menu: dropdownMenu,
+        button: dropdownButton,
+        currentArray: currentEmrArray,
+        updateButton: updateDropdownButton,
+      };
+
+      field.innerHTML = "";
+      field.appendChild(container);
+      return; // Skip normal input creation
     } else {
       input = document.createElement("input");
       input.type = "text";
     }
 
-    input.value = currentValue === "Not specified" ? "" : currentValue;
+    // Set the value - for dropdowns, if empty or "Not specified", use empty string to show placeholder
+    if (fieldName === "industry") {
+      // For dropdowns, if current value is empty, "Not specified", or doesn't match any option, use empty string
+      const trimmedValue = (currentValue || "").trim();
+      if (trimmedValue === "" || trimmedValue === "Not specified") {
+        // Show placeholder when value is empty
+        input.value = "";
+        input.selectedIndex = 0;
+      } else {
+        // Try to find matching option by value first, then by text content
+        let matchingOption = null;
+        for (let i = 0; i < input.options.length; i++) {
+          const opt = input.options[i];
+          if (opt.value === trimmedValue || opt.textContent === trimmedValue) {
+            matchingOption = opt;
+            break;
+          }
+        }
+
+        if (matchingOption && matchingOption.value !== "") {
+          // Found a match - select that option
+          input.value = matchingOption.value;
+        } else {
+          // No match found - show placeholder
+          input.value = "";
+          input.selectedIndex = 0;
+        }
+      }
+    } else {
+      input.value = currentValue === "Not specified" ? "" : currentValue;
+    }
+
     input.className = "edit-input";
     input.id = `edit-company-${fieldName}`;
 
@@ -6120,6 +6827,149 @@ function editCompanyInfo() {
     cancelCompanyBtn.addEventListener("click", cancelEditCompanyInfo);
     console.log("✅ Company Cancel button event listener added");
   }
+
+  // Add event listeners for remove EMR buttons
+  const removeEmrBtns = companyInfoSection.querySelectorAll(
+    ".remove-company-emr-btn"
+  );
+  removeEmrBtns.forEach((btn) => {
+    btn.addEventListener("click", function () {
+      const index = parseInt(this.getAttribute("data-index"));
+      removeCompanyEmr(index);
+    });
+  });
+}
+
+// Toggle Type Writing selection in custom dropdown
+function toggleTypeWritingSelection(
+  optionValue,
+  menuItem,
+  dropdownMenu,
+  updateButton
+) {
+  // Get current Type Writing array
+  const currentArray = Array.isArray(window.currentProfileData?.type_writing)
+    ? window.currentProfileData.type_writing
+    : window.currentProfileData?.type_writing
+    ? [window.currentProfileData.type_writing]
+    : [];
+
+  const isSelected = currentArray.includes(optionValue);
+
+  // Initialize type_writing if needed
+  if (!window.currentProfileData.type_writing) {
+    window.currentProfileData.type_writing = [];
+  }
+
+  if (isSelected) {
+    // Remove from array
+    const index = currentArray.indexOf(optionValue);
+    if (index > -1) {
+      window.currentProfileData.type_writing = currentArray;
+      window.currentProfileData.type_writing.splice(index, 1);
+      menuItem.classList.remove("selected");
+      menuItem.querySelector(".checkmark")?.remove();
+    }
+  } else {
+    // Add to array
+    window.currentProfileData.type_writing = currentArray;
+    window.currentProfileData.type_writing.push(optionValue);
+    menuItem.classList.add("selected");
+    const checkmark = document.createElement("span");
+    checkmark.className = "checkmark";
+    checkmark.textContent = "✓";
+    menuItem.querySelector(".item-text").after(checkmark);
+  }
+
+  // Update stored reference and button display
+  if (window.currentTypeWritingDropdown && updateButton) {
+    window.currentTypeWritingDropdown.currentArray =
+      window.currentProfileData.type_writing || [];
+    updateButton();
+  }
+}
+
+// Toggle EMR selection in custom dropdown
+function toggleEmrSelection(emrName, menuItem, dropdownMenu) {
+  // Get current EMR array
+  const currentEmrArray = Array.isArray(window.currentProfileData.company?.emr)
+    ? window.currentProfileData.company.emr
+    : window.currentProfileData.company?.emr
+    ? [window.currentProfileData.company.emr]
+    : [];
+
+  const isSelected = currentEmrArray.includes(emrName);
+
+  // Initialize company.emr if needed
+  if (!window.currentProfileData.company) {
+    window.currentProfileData.company = {};
+  }
+
+  if (isSelected) {
+    // Remove from array
+    const index = currentEmrArray.indexOf(emrName);
+    if (index > -1) {
+      window.currentProfileData.company.emr = currentEmrArray;
+      window.currentProfileData.company.emr.splice(index, 1);
+      menuItem.classList.remove("selected");
+      menuItem.querySelector(".checkmark")?.remove();
+    }
+  } else {
+    // Add to array
+    window.currentProfileData.company.emr = currentEmrArray;
+    window.currentProfileData.company.emr.push(emrName);
+    menuItem.classList.add("selected");
+    const checkmark = document.createElement("span");
+    checkmark.className = "checkmark";
+    checkmark.textContent = "✓";
+    menuItem.querySelector(".item-text").after(checkmark);
+  }
+
+  // Update stored reference and button display
+  if (window.currentEmrDropdown && window.currentEmrDropdown.updateButton) {
+    window.currentEmrDropdown.currentArray =
+      window.currentProfileData.company.emr || [];
+    window.currentEmrDropdown.updateButton();
+  }
+}
+
+function addCompanyEmr() {
+  // This function is no longer used with custom dropdown, but keeping for compatibility
+  console.log("⚠️ addCompanyEmr called but custom dropdown is in use");
+}
+
+function removeCompanyEmr(index) {
+  console.log("🗑️ Removing company EMR at index:", index);
+
+  const currentEmrArray = Array.isArray(window.currentProfileData.company?.emr)
+    ? window.currentProfileData.company.emr
+    : window.currentProfileData.company?.emr
+    ? [window.currentProfileData.company.emr]
+    : [];
+
+  if (currentEmrArray && currentEmrArray.length > index) {
+    const removedValue = currentEmrArray[index];
+    currentEmrArray.splice(index, 1);
+    window.currentProfileData.company.emr =
+      currentEmrArray.length > 0 ? currentEmrArray : null;
+
+    // Update custom dropdown if it exists
+    if (window.currentEmrDropdown && window.currentEmrDropdown.menu) {
+      const menuItem = window.currentEmrDropdown.menu.querySelector(
+        `[data-value="${removedValue}"]`
+      );
+      if (menuItem) {
+        menuItem.classList.remove("selected");
+        menuItem.querySelector(".checkmark")?.remove();
+      }
+      // Update stored reference and button display
+      if (window.currentEmrDropdown && window.currentEmrDropdown.updateButton) {
+        window.currentEmrDropdown.currentArray =
+          window.currentProfileData.company.emr || [];
+        window.currentEmrDropdown.updateButton();
+      }
+    }
+  }
 }
 
 // Save Company Info function
@@ -6130,7 +6980,6 @@ async function saveCompanyInfo() {
     // Get form data
     const nameField = document.getElementById("edit-company-name");
     const industryField = document.getElementById("edit-company-industry");
-    const emrField = document.getElementById("edit-company-emr");
     const addressField = document.getElementById("edit-company-address");
     // The edit function creates it as edit-company-status (from profile-company-status)
     const isActiveField = document.getElementById("edit-company-status");
@@ -6138,27 +6987,27 @@ async function saveCompanyInfo() {
     console.log("🔍 Company form fields:", {
       nameField: !!nameField,
       industryField: !!industryField,
-      emrField: !!emrField,
       addressField: !!addressField,
       isActiveField: !!isActiveField,
     });
 
-    if (
-      !nameField ||
-      !industryField ||
-      !emrField ||
-      !addressField ||
-      !isActiveField
-    ) {
+    if (!nameField || !industryField || !addressField || !isActiveField) {
       showErrorMessage("Edit form not found. Please try editing again.");
       console.log("❌ Missing fields - cannot save");
       return;
     }
 
+    // Get EMR array from current profile data (updated by add/remove functions)
+    const emrArray = Array.isArray(window.currentProfileData.company?.emr)
+      ? window.currentProfileData.company.emr
+      : window.currentProfileData.company?.emr
+      ? [window.currentProfileData.company.emr]
+      : null;
+
     const formData = {
       name: nameField.value,
       industry: industryField.value,
-      emr: emrField.value,
+      emr: emrArray, // Send as array (or null if empty)
       address: addressField.value,
       is_active: isActiveField.value === "true",
     };
@@ -6235,6 +7084,11 @@ async function saveCompanyInfo() {
     // Reload profile page
     updateProfilePage(window.currentProfileData, window.profileAdditionalData);
 
+    // Clear stored original EMR array after successful save
+    if (window.originalCompanyEmr) {
+      delete window.originalCompanyEmr;
+    }
+
     // Show bottom edit button again
     const companyBottomBtn = document.getElementById(
       "edit-company-info-bottom-btn"
@@ -6284,6 +7138,10 @@ function cancelEditCompanyInfo() {
       const editInputs = field.querySelectorAll(".edit-input");
       editInputs.forEach((input) => input.remove());
 
+      // Also remove array edit containers (for EMR multi-select)
+      const arrayContainers = field.querySelectorAll(".array-edit-container");
+      arrayContainers.forEach((container) => container.remove());
+
       // Restore original content based on field ID
       const fieldName = field.id.replace("profile-company-", "");
       let originalValue = "";
@@ -6297,8 +7155,19 @@ function cancelEditCompanyInfo() {
           window.currentProfileData.company?.industry || "Not specified";
         field.textContent = originalValue;
       } else if (fieldName === "emr") {
-        originalValue =
-          window.currentProfileData.company?.emr || "Not specified";
+        // Restore original EMR array (before any edits)
+        if (window.originalCompanyEmr) {
+          window.currentProfileData.company.emr = JSON.parse(
+            JSON.stringify(window.originalCompanyEmr)
+          );
+        }
+        // Handle emr as array
+        const emrArray = window.currentProfileData.company?.emr;
+        if (emrArray && Array.isArray(emrArray) && emrArray.length > 0) {
+          originalValue = emrArray.join(", ");
+        } else {
+          originalValue = "Not specified";
+        }
         field.textContent = originalValue;
       } else if (fieldName === "address") {
         originalValue =
@@ -6317,6 +7186,11 @@ function cancelEditCompanyInfo() {
 
   // Reload profile page with original data
   updateProfilePage(window.currentProfileData, window.profileAdditionalData);
+
+  // Clear stored original EMR array
+  if (window.originalCompanyEmr) {
+    delete window.originalCompanyEmr;
+  }
 
   // Show bottom edit button again
   const companyBottomBtn = document.getElementById(
@@ -6429,6 +7303,9 @@ async function generateAINotes() {
 
     // Show success message
     showSuccessMessage("AI Notes generated successfully!");
+
+    // Switch to AI Notes tab to show the generated content
+    switchToAINotesTab();
   } catch (error) {
     console.error("❌ Error generating AI notes:", error);
     showErrorMessage("Failed to generate AI notes. Please try again.");
@@ -7024,7 +7901,7 @@ async function loadAddSessionDynamicFields(emrTypeId) {
           fieldContainer.className = "form-group";
 
           const label = document.createElement("label");
-          label.textContent = result.key;
+          label.textContent = formatFieldNameForDisplay(result.key);
           label.setAttribute(
             "for",
             `new-${result.key.replace(/\s+/g, "-").toLowerCase()}`
@@ -7270,7 +8147,7 @@ async function loadAddSessionDynamicFields(emrTypeId) {
           fieldContainer.className = "form-group";
 
           const label = document.createElement("label");
-          label.textContent = manualField.name;
+          label.textContent = formatFieldNameForDisplay(manualField.name);
           label.setAttribute(
             "for",
             `new-${manualField.name.replace(/\s+/g, "-").toLowerCase()}`
@@ -7959,11 +8836,100 @@ async function saveNewSession() {
     const sessionData = await response.json();
     console.log("✅ Session created successfully:", sessionData);
 
-    // Show success message
-    showSuccessMessage("Session created successfully!");
+    // Store session as current session
+    chrome.storage.local.set({ currentSession: sessionData }, () => {
+      console.log("💾 New session stored as currentSession");
+    });
 
     // Close modal
     hideAddSessionModal();
+
+    // Automatically generate AI notes for the new session
+    console.log("🤖 Auto-generating AI Notes for new session...");
+    try {
+      // Show loading message
+      showSuccessMessage("Session created! Generating AI Notes...");
+
+      // Generate AI notes
+      const generateResponse = await fetch(
+        `${API_BASE_URL}/sessions/${sessionData.id}/generate`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${tokenResult.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      if (!generateResponse.ok) {
+        throw new Error(
+          `Failed to generate AI notes: ${generateResponse.status}`
+        );
+      }
+
+      const aiNotesData = await generateResponse.json();
+      console.log("✅ AI Notes generated:", aiNotesData);
+
+      // Update session data with AI notes
+      sessionData.methods_response = aiNotesData.methods;
+      sessionData.progress_towards_goal_response =
+        aiNotesData.progress_towards_goal;
+      sessionData.recommended_changes_response =
+        aiNotesData.recommended_changes;
+
+      // Store updated session
+      chrome.storage.local.set({ currentSession: sessionData });
+
+      // Show session detail page and switch to AI Notes tab
+      await showSessionDetail(sessionData);
+
+      // Wait for page to load, then switch to AI Notes tab
+      setTimeout(() => {
+        const sessionInfoTab = document.getElementById("session-info-tab");
+        const activityTab = document.getElementById("session-activity-tab");
+        const sessionInfoContent = document.getElementById(
+          "session-info-content"
+        );
+        const activityContent = document.getElementById(
+          "session-activity-content"
+        );
+
+        if (
+          sessionInfoTab &&
+          activityTab &&
+          sessionInfoContent &&
+          activityContent
+        ) {
+          // Remove active from Session Info
+          sessionInfoTab.classList.remove("active");
+          sessionInfoContent.classList.remove("active");
+          // Add active to AI Notes
+          activityTab.classList.add("active");
+          activityContent.classList.add("active");
+
+          // Hide session details for AI Notes tab
+          hideSessionDetailsForAINotes();
+
+          // Update buttons to hide edit button for AI Notes tab
+          updateSessionButtons("ai-notes");
+
+          // Update AI Notes content with generated data
+          updateAINotesContent(aiNotesData);
+
+          console.log("✅ Switched to AI Notes tab with generated content!");
+        }
+
+        showSuccessMessage("AI Notes generated successfully!");
+      }, 300);
+    } catch (error) {
+      console.error("❌ Error generating AI notes:", error);
+      // Still show the session detail page even if AI notes generation fails
+      await showSessionDetail(sessionData);
+      showErrorMessage(
+        "Session created, but failed to generate AI notes. You can generate them manually."
+      );
+    }
 
     // Refresh sessions list if on client detail page
     const currentPage = document.querySelector(
@@ -8612,7 +9578,7 @@ async function loadSessionDynamicFields(sessionData) {
         fieldContainer.className = "form-group";
 
         const label = document.createElement("label");
-        label.textContent = result.key;
+        label.textContent = formatFieldNameForDisplay(result.key);
         label.setAttribute(
           "for",
           `edit-${result.key.replace(/\s+/g, "-").toLowerCase()}`
@@ -8830,7 +9796,7 @@ async function loadSessionDynamicFields(sessionData) {
           fieldContainer.className = "form-group";
 
           const label = document.createElement("label");
-          label.textContent = result.key;
+          label.textContent = formatFieldNameForDisplay(result.key);
           label.setAttribute(
             "for",
             `edit-${result.key.replace(/\s+/g, "-").toLowerCase()}`
@@ -9093,7 +10059,7 @@ async function loadSessionDynamicFields(sessionData) {
         fieldContainer.className = "form-group";
 
         const label = document.createElement("label");
-        label.textContent = manualField.name;
+        label.textContent = formatFieldNameForDisplay(manualField.name);
         label.setAttribute(
           "for",
           `edit-${manualField.name.replace(/\s+/g, "-").toLowerCase()}`
@@ -9600,6 +10566,27 @@ function updateClientDetailPage(client) {
 
   // Update client history with real data
   updateClientHistory(client.history);
+
+  // Set up edit button click handler
+  const editClientBtn = document.getElementById("edit-client-from-detail-btn");
+  if (editClientBtn) {
+    // Remove any existing event listeners by cloning the button
+    const newBtn = editClientBtn.cloneNode(true);
+    editClientBtn.parentNode.replaceChild(newBtn, editClientBtn);
+
+    // Add event listener to the new button
+    newBtn.addEventListener("click", function () {
+      const clientId = client.id || client.client_id || client.clientId;
+      if (clientId) {
+        console.log("✏️ Edit client button clicked, client ID:", clientId);
+        editClient(clientId);
+      } else {
+        console.error("❌ No client ID found");
+        showErrorMessage("Unable to edit client. Please try again.");
+      }
+    });
+    console.log("✅ Edit client button event listener added");
+  }
 }
 
 function updateClientHistory(historyData) {
@@ -9628,25 +10615,25 @@ async function captureFastHTML() {
   console.log("📋 Starting fast HTML capture...");
 
   // Get form values
-  const emrTypeSelect = document.getElementById("emr-type");
+  const emrTypeInput = document.getElementById("emr-type");
   const sessionTypeSelect = document.getElementById("session-type");
   const documentationMethodSelect = document.getElementById(
     "documentation-method"
   );
 
-  if (!emrTypeSelect || !sessionTypeSelect || !documentationMethodSelect) {
+  if (!emrTypeInput || !sessionTypeSelect || !documentationMethodSelect) {
     showErrorMessage("Form elements not found. Please try again.");
     return;
   }
 
-  const emrTypeName = emrTypeSelect.options[emrTypeSelect.selectedIndex]?.text;
+  const emrTypeName = emrTypeInput.value.trim();
   const sessionType =
     sessionTypeSelect.options[sessionTypeSelect.selectedIndex]?.text;
   const documentationMethodId = documentationMethodSelect.value;
 
   // Validate form fields
-  if (!emrTypeName || emrTypeSelect.value === "") {
-    showErrorMessage("Please select an EMR Type");
+  if (!emrTypeName || emrTypeName === "") {
+    showErrorMessage("Please enter an EMR Type");
     return;
   }
   if (!sessionType || sessionTypeSelect.value === "") {
@@ -10790,6 +11777,13 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
   console.log("📊 Scraped data:", scrapedData);
   console.log("📊 EMR Type ID:", emrTypeId);
 
+  // Set button text to "Generate AI Notes" for new auto-detected session
+  const autoGenerateButton = document.getElementById("auto-generate-button");
+  if (autoGenerateButton) {
+    autoGenerateButton.textContent = "Generate AI Notes";
+    autoGenerateButton.disabled = false;
+  }
+
   try {
     // Find client ID by name (optional - we no longer block if not found)
     const clientName = scrapedData.Client || scrapedData.client;
@@ -10836,6 +11830,12 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
         scrapedData.Instructions || scrapedData.instructions || "-";
       autoInstructionsValueEl.textContent = instructionsText;
       autoInstructionsValueEl.title = instructionsText;
+    }
+
+    // Show "Session Data" label before dynamic fields
+    const sessionDataTitle = document.getElementById("auto-session-data-title");
+    if (sessionDataTitle) {
+      sessionDataTitle.style.display = "block";
     }
 
     // Populate confirmed results fields (view mode)
@@ -10925,6 +11925,12 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
       "auto-manual-fields-container"
     );
     manualContainer.innerHTML = ""; // Clear
+
+    // Add divider line before Modality fields
+    const dividerLine = document.createElement("div");
+    dividerLine.style.cssText =
+      "width: 100%; height: 1px; background-color: #e5e7eb; margin: 4px 0;";
+    manualContainer.appendChild(dividerLine);
 
     // Fetch modalities and modality steps from API
     console.log("📥 Fetching modalities and modality steps...");
