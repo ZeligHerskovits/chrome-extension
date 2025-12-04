@@ -577,7 +577,7 @@ function showOTPForm() {
 }
 
 function setupMainAppHandlers() {
-  const captureButton = document.querySelector(".send-button");
+  const captureButton = document.getElementById("send-emr-request-btn");
   if (captureButton) {
     captureButton.addEventListener("click", function () {
       console.log("🎯 Fast capture button clicked");
@@ -586,6 +586,9 @@ function setupMainAppHandlers() {
   } else {
     console.error("❌ Capture button not found");
   }
+
+  // Setup EMR Types page specific handlers
+  setupEmrTypesPageHandlers();
 
   // Setup edit button event listeners
   setupEditButtonHandlers();
@@ -598,6 +601,472 @@ function setupMainAppHandlers() {
 
   // Setup forgot password link
   setupForgotPasswordHandler();
+}
+
+function setupEmrTypesPageHandlers() {
+  const checkBtn = document.getElementById("check-emr-types-btn");
+  const selectEl = document.getElementById("existing-emr-type-select");
+  const foundBtn = document.getElementById("existing-emr-found-btn");
+  const notFoundBtn = document.getElementById("existing-emr-not-found-btn");
+
+  if (checkBtn) {
+    checkBtn.addEventListener("click", () => {
+      console.log("🔎 Checking if EMR type exists for current site...");
+      handleCheckExistingEmrTypes();
+    });
+  }
+
+  if (selectEl && foundBtn && notFoundBtn) {
+    selectEl.addEventListener("change", () => {
+      if (selectEl.value) {
+        // If a value is selected: "Found" enabled, "Not found" disabled
+        foundBtn.disabled = false;
+        notFoundBtn.disabled = true;
+      } else {
+        // If no value selected: "Found" disabled, "Not found" enabled
+        foundBtn.disabled = true;
+        notFoundBtn.disabled = false;
+      }
+    });
+  }
+
+  if (foundBtn && selectEl) {
+    foundBtn.addEventListener("click", async () => {
+      const selectedId = selectEl.value;
+      if (!selectedId) {
+        return;
+      }
+      await handleExistingEmrFound(selectedId);
+    });
+  }
+
+  if (notFoundBtn) {
+    notFoundBtn.addEventListener("click", () => {
+      console.log(
+        "ℹ️ User clicked Not found under existing EMR Types – falling back to new EMR flow."
+      );
+      const existSection = document.getElementById("emr-types-exist-section");
+      const selectGroup = document.getElementById("existing-emr-select-group");
+      const actionsGroup = document.getElementById(
+        "existing-emr-actions-group"
+      );
+      const newFormContainer = document.getElementById(
+        "new-emr-type-form-container"
+      );
+
+      // Hide existing-EMR UI and show the new EMR form
+      if (existSection) existSection.style.display = "none";
+      if (selectGroup) selectGroup.style.display = "none";
+      if (actionsGroup) actionsGroup.style.display = "none";
+      if (newFormContainer) newFormContainer.style.display = "block";
+    });
+  }
+}
+
+function getComparableDomain(value) {
+  if (!value) return "";
+
+  let hostname = "";
+  try {
+    // If it's a full URL, extract hostname; otherwise treat as hostname-like
+    if (value.includes("://")) {
+      hostname = new URL(value).hostname;
+    } else {
+      hostname = value;
+    }
+  } catch (e) {
+    hostname = value;
+  }
+
+  // Remove leading www.
+  hostname = hostname.replace(/^www\./i, "");
+
+  const parts = hostname.split(".").filter(Boolean);
+  if (parts.length > 2) {
+    // Use last two parts as base domain (e.g. sub.amazon.com -> amazon.com)
+    return parts.slice(-2).join(".");
+  }
+
+  return hostname;
+}
+
+async function handleCheckExistingEmrTypes() {
+  const checkBtn = document.getElementById("check-emr-types-btn");
+  const selectGroup = document.getElementById("existing-emr-select-group");
+  const selectEl = document.getElementById("existing-emr-type-select");
+  const actionsGroup = document.getElementById("existing-emr-actions-group");
+  const foundBtn = document.getElementById("existing-emr-found-btn");
+  const notFoundBtn = document.getElementById("existing-emr-not-found-btn");
+  const existSection = document.getElementById("emr-types-exist-section");
+  const newFormContainer = document.getElementById(
+    "new-emr-type-form-container"
+  );
+
+  if (!checkBtn || !selectEl || !actionsGroup || !foundBtn || !notFoundBtn) {
+    console.error("❌ EMR Types exist UI elements not found");
+    return;
+  }
+
+  checkBtn.disabled = true;
+  checkBtn.textContent = "Checking...";
+
+  try {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      try {
+        if (!tabs || !tabs[0]) {
+          console.error("❌ No active tab found while checking EMR types");
+          if (typeof showErrorMessage === "function") {
+            showErrorMessage("No active tab found. Please try again.");
+          }
+          return;
+        }
+
+        const currentUrl = tabs[0].url || "";
+        const currentDomain = getComparableDomain(currentUrl);
+        console.log("🌐 Current page domain for EMR match:", currentDomain);
+
+        // Get access token
+        const { accessToken } = await chrome.storage.local.get(["accessToken"]);
+        if (!accessToken) {
+          console.error("❌ No access token found while fetching EMR types");
+          if (typeof showErrorMessage === "function") {
+            showErrorMessage("No access token found. Please log in again.");
+          }
+          return;
+        }
+
+        // Fetch all EMR types
+        const response = await fetch(`${API_BASE_URL}/emr-types/`, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (
+          typeof check401Response === "function" &&
+          check401Response(response)
+        ) {
+          // 401 handled inside check401Response
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Failed to fetch EMR types: ${response.status}`);
+        }
+
+        const emrTypes = await response.json();
+        console.log("📥 All EMR Types loaded for existence check:", emrTypes);
+
+        // Filter by matching domain (emr.emr_url vs current page domain)
+        const matchingEmrTypes = (emrTypes || []).filter((emr) => {
+          if (!emr || !emr.emr_url) return false;
+          const emrDomain = getComparableDomain(emr.emr_url);
+          const isMatch = !!emrDomain && emrDomain === currentDomain;
+          if (isMatch) {
+            console.log(
+              "🔗 EMR URL matched current domain:",
+              emr.emr_url,
+              "->",
+              emrDomain
+            );
+          }
+          return isMatch;
+        });
+
+        if (!matchingEmrTypes.length) {
+          console.log(
+            "ℹ️ No EMR types with matching URL domain. Hiding existing-EMR section and falling back to new EMR flow."
+          );
+
+          // Hide the entire "EMR type exist ?" section and its controls
+          if (existSection) {
+            existSection.style.display = "none";
+          }
+          if (selectGroup) {
+            selectGroup.style.display = "none";
+          }
+          if (actionsGroup) {
+            actionsGroup.style.display = "none";
+          }
+          if (foundBtn) {
+            foundBtn.disabled = true;
+          }
+          if (notFoundBtn) {
+            notFoundBtn.disabled = false;
+          }
+          if (selectEl) {
+            selectEl.innerHTML = '<option value="">Select EMR Type</option>';
+          }
+
+          // Reveal the original "new EMR type" form so user can proceed as before
+          if (newFormContainer) {
+            newFormContainer.style.display = "block";
+          }
+
+          if (typeof showErrorMessage === "function") {
+            showErrorMessage(
+              "No existing EMR type found for this site. Please create a new one."
+            );
+          }
+        } else {
+          console.log(
+            "✅ Matching EMR types found for current domain:",
+            matchingEmrTypes
+          );
+
+          // Store on window for potential future use
+          window.matchingEmrTypesForCurrentDomain = matchingEmrTypes;
+
+          // Populate dropdown
+          selectEl.innerHTML = '<option value="">Select EMR Type</option>';
+          matchingEmrTypes.forEach((emr) => {
+            const option = document.createElement("option");
+            option.value = emr.id;
+            option.textContent = emr.name || `EMR #${emr.id}`;
+            selectEl.appendChild(option);
+          });
+
+          // Make sure the exist section and controls are visible
+          if (existSection) {
+            existSection.style.display = "block";
+          }
+          // Hide the "EMR type exist ?" button once we know there are options
+          if (checkBtn) {
+            checkBtn.style.display = "none";
+          }
+          if (selectGroup) {
+            selectGroup.style.display = "block";
+          }
+          if (actionsGroup) {
+            // Use flex so CSS gap between Found / Not found applies
+            actionsGroup.style.display = "flex";
+          }
+          // Initial state with matches: nothing selected yet
+          if (foundBtn) {
+            foundBtn.disabled = true;
+          }
+          if (notFoundBtn) {
+            notFoundBtn.disabled = false;
+          }
+
+          if (typeof showSuccessMessage === "function") {
+            showSuccessMessage(
+              "Found existing EMR types for this site. Please choose one."
+            );
+          }
+        }
+      } catch (innerError) {
+        console.error(
+          "❌ Error while checking existing EMR types:",
+          innerError
+        );
+        if (typeof showErrorMessage === "function") {
+          showErrorMessage(
+            `Error while checking existing EMR types: ${innerError.message}`
+          );
+        }
+      } finally {
+        // Only re-enable the button if it is still visible
+        if (checkBtn && checkBtn.style.display !== "none") {
+          checkBtn.disabled = false;
+          checkBtn.textContent = "EMR type exist ?";
+        }
+      }
+    });
+  } catch (error) {
+    console.error("❌ Unexpected error while checking EMR types:", error);
+    if (typeof showErrorMessage === "function") {
+      showErrorMessage(
+        `Unexpected error while checking existing EMR types: ${error.message}`
+      );
+    }
+    if (checkBtn && checkBtn.style.display !== "none") {
+      checkBtn.disabled = false;
+      checkBtn.textContent = "EMR type exist ?";
+    }
+  }
+}
+
+async function handleExistingEmrFound(selectedEmrTypeId) {
+  try {
+    console.log("✅ Found button clicked for EMR Type ID:", selectedEmrTypeId);
+
+    // Ensure profile data is loaded
+    if (!window.currentProfileData || !window.profileAdditionalData) {
+      console.log(
+        "ℹ️ Profile data not loaded yet – loading it now before saving pair..."
+      );
+      await loadProfileData();
+    }
+
+    if (!window.currentProfileData || !window.profileAdditionalData) {
+      console.error("❌ Unable to load profile data for saving EMR pair");
+      showErrorMessage(
+        "Could not load your profile. Please open the Profile page once and try again."
+      );
+      return;
+    }
+
+    // Find the selected EMR object (from the domain-matched list or all emrTypes)
+    let emrObj = null;
+    if (Array.isArray(window.matchingEmrTypesForCurrentDomain)) {
+      emrObj = window.matchingEmrTypesForCurrentDomain.find(
+        (e) => String(e.id) === String(selectedEmrTypeId)
+      );
+    }
+    if (!emrObj && Array.isArray(window.profileAdditionalData.emrTypes)) {
+      emrObj = window.profileAdditionalData.emrTypes.find(
+        (e) => String(e.id) === String(selectedEmrTypeId)
+      );
+    }
+
+    if (!emrObj) {
+      console.warn(
+        "⚠️ Selected EMR type not found in cached lists. Proceeding with ID only."
+      );
+    }
+
+    const emrTypeId = String(selectedEmrTypeId);
+    const emrTypeName = emrObj?.name || `EMR #${emrTypeId}`;
+
+    // Determine documentation method: prefer from EMR object, fall back to first existing pair
+    let documentationMethodId =
+      emrObj && emrObj.documentation_method_id
+        ? String(emrObj.documentation_method_id)
+        : null;
+
+    if (
+      !documentationMethodId &&
+      Array.isArray(window.currentProfileData.emr_type_documentation_pairs) &&
+      window.currentProfileData.emr_type_documentation_pairs.length > 0
+    ) {
+      documentationMethodId = String(
+        window.currentProfileData.emr_type_documentation_pairs[0]
+          .documentation_method_id
+      );
+      console.log(
+        "ℹ️ Using documentation method from first existing pair:",
+        documentationMethodId
+      );
+    }
+
+    if (!documentationMethodId) {
+      console.error("❌ No documentation method available for EMR pair");
+      showErrorMessage(
+        "No documentation method found for this EMR. Please configure EMR Personalization in your Profile first."
+      );
+      return;
+    }
+
+    // Resolve documentation method name
+    let documentationMethodName = `Method #${documentationMethodId}`;
+    if (
+      Array.isArray(window.profileAdditionalData.documentationMethods) &&
+      window.profileAdditionalData.documentationMethods.length > 0
+    ) {
+      const docMethod = window.profileAdditionalData.documentationMethods.find(
+        (dm) => String(dm.id) === String(documentationMethodId)
+      );
+      if (docMethod) {
+        documentationMethodName = docMethod.name || documentationMethodName;
+      }
+    }
+
+    // Build new pair
+    const newPair = {
+      emr_type_id: emrTypeId,
+      documentation_method_id: documentationMethodId,
+      emr_type_name: emrTypeName,
+      documentation_method_name: documentationMethodName,
+    };
+
+    console.log("💾 New EMR pair candidate:", newPair);
+
+    // Check if a pair for this EMR type already exists
+    const existingPairs =
+      window.currentProfileData.emr_type_documentation_pairs || [];
+    const alreadyExists = existingPairs.some(
+      (p) => String(p.emr_type_id) === String(emrTypeId)
+    );
+
+    if (alreadyExists) {
+      console.log(
+        "ℹ️ Pair for this EMR type already exists in profile. Not creating a duplicate."
+      );
+      showSuccessMessage(
+        "This EMR is already linked in your profile. Redirecting to Clients..."
+      );
+      navigateToPage("clients");
+      return;
+    }
+
+    // No existing pair for this EMR type – append a new one, keep all others
+    const allPairs = [...existingPairs, newPair];
+
+    // Build request body (mirror structure from saveEMRInfo)
+    const typeWritingArray = Array.isArray(
+      window.currentProfileData?.type_writing
+    )
+      ? window.currentProfileData.type_writing
+      : window.currentProfileData?.type_writing
+      ? [window.currentProfileData.type_writing]
+      : [];
+
+    const requestBody = {
+      ...window.currentProfileData,
+      emr_type_documentation_pairs: allPairs,
+      coping_skills: window.currentProfileData.coping_skills || [],
+      clinical_specialties:
+        window.currentProfileData.clinical_specialties || [],
+      type_writing: typeWritingArray,
+    };
+
+    // Get token
+    const tokenResult = await chrome.storage.local.get(["accessToken"]);
+    if (!tokenResult.accessToken) {
+      showErrorMessage("Please log in again to save EMR pair.");
+      return;
+    }
+
+    console.log("📦 Saving EMR pair via /me PUT:", requestBody);
+
+    const response = await fetch(`${API_BASE_URL}/me`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (check401Response(response)) {
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const updatedData = await response.json();
+    window.currentProfileData = updatedData;
+    console.log(
+      "✅ EMR pair saved via Found button. Updated profile:",
+      updatedData
+    );
+
+    // Let the user know, then redirect to Clients page
+    showSuccessMessage(
+      "EMR pair updated successfully. Redirecting to Clients..."
+    );
+    navigateToPage("clients");
+  } catch (error) {
+    console.error("❌ Error while handling Found EMR action:", error);
+    showErrorMessage(
+      `Failed to update EMR pair from Found button: ${error.message}`
+    );
+  }
 }
 
 function setupForgotPasswordHandler() {
@@ -776,7 +1245,11 @@ async function switchAutoDetectedSessionToEditMode() {
     const valueElement = document.getElementById(field.valueId);
 
     if (container && valueElement) {
-      const currentValue = valueElement.textContent;
+      let currentValue = valueElement.textContent;
+      // If the view shows "-" for empty values, treat it as empty string when switching to edit mode
+      if (currentValue === "-") {
+        currentValue = "";
+      }
 
       // Replace with input field (or textarea for Instructions)
       const label = container.querySelector(".detail-label");
@@ -832,7 +1305,12 @@ async function switchAutoDetectedSessionToEditMode() {
         if (checkboxInput) {
           existingValues[labelText] = checkboxInput.checked;
         } else {
-          existingValues[labelText] = valueSpan.textContent.trim();
+          let fieldValue = valueSpan.textContent.trim();
+          // If the view shows "-" for empty values, treat it as empty string when switching to edit mode
+          if (fieldValue === "-") {
+            fieldValue = "";
+          }
+          existingValues[labelText] = fieldValue;
         }
       }
     });
@@ -996,6 +1474,7 @@ async function switchAutoDetectedSessionToEditMode() {
     "auto-manual-fields-container"
   );
   if (manualContainer) {
+    // No divider needed - divider is only in view mode on manual view session page
     // Manual fields should already be in edit mode, but we can verify types are correct
     // They're created with createEditableFieldElement which uses correct types
   }
@@ -1036,8 +1515,8 @@ function saveAutoDetectedSession() {
     '#auto-instructions-container input[data-field-name="Instructions"], #auto-instructions-container textarea[data-field-name="Instructions"]'
   );
   if (instructionsInput) {
-    const newInstructions =
-      instructionsInput.value || instructionsInput.textContent;
+    // Use value directly - empty string is a valid value that should be saved
+    const newInstructions = instructionsInput.value ?? "";
     scrapedData.Instructions = newInstructions;
     scrapedData.instructions = newInstructions;
 
@@ -2153,6 +2632,9 @@ function navigateToPage(page) {
   } else if (page === "session-detail") {
     loadSessionAINotes();
   } else if (page === "emr-types") {
+    // Reset EMR Types UI every time you open it, so the
+    // "EMR type exist ?" button always shows again.
+    resetEmrTypesPageUI();
     loadDocumentationMethods();
     checkPendingEMRRequests();
   } else if (page === "auto-detected-session") {
@@ -2181,6 +2663,54 @@ function navigateToPage(page) {
   }
 
   console.log(`📄 Navigated to ${page} page`);
+}
+
+function resetEmrTypesPageUI() {
+  const existSection = document.getElementById("emr-types-exist-section");
+  const selectGroup = document.getElementById("existing-emr-select-group");
+  const selectEl = document.getElementById("existing-emr-type-select");
+  const actionsGroup = document.getElementById("existing-emr-actions-group");
+  const foundBtn = document.getElementById("existing-emr-found-btn");
+  const notFoundBtn = document.getElementById("existing-emr-not-found-btn");
+  const checkBtn = document.getElementById("check-emr-types-btn");
+  const newFormContainer = document.getElementById(
+    "new-emr-type-form-container"
+  );
+
+  // Always show the "EMR type exist ?" section when entering the page
+  if (existSection) {
+    existSection.style.display = "block";
+  }
+
+  // Show and reset the "EMR type exist ?" button when entering the page
+  if (checkBtn) {
+    checkBtn.style.display = "block";
+    checkBtn.disabled = false;
+    checkBtn.textContent = "EMR type exist ?";
+  }
+
+  // Hide existing-EMR dropdown + button until user clicks the check button
+  if (selectGroup) {
+    selectGroup.style.display = "none";
+  }
+  if (actionsGroup) {
+    actionsGroup.style.display = "none";
+  }
+  if (foundBtn) {
+    foundBtn.disabled = true;
+  }
+  if (notFoundBtn) {
+    notFoundBtn.disabled = false;
+  }
+  if (selectEl) {
+    selectEl.value = "";
+    selectEl.innerHTML = '<option value="">Select EMR Type</option>';
+  }
+
+  // Hide the new-EMR form by default; it will be shown only if no match exists
+  if (newFormContainer) {
+    newFormContainer.style.display = "none";
+  }
 }
 
 async function loadDocumentationMethods() {
@@ -3548,7 +4078,7 @@ function updateSessionDetailPage(session, dynamicFields = null) {
 }
 
 // Function to render dynamic fields in session detail
-function renderDynamicFields(dynamicFields) {
+async function renderDynamicFields(dynamicFields) {
   console.log("🔄 Rendering dynamic fields:", dynamicFields);
   console.log("📊 Confirmed results:", dynamicFields.confirmedResults);
   console.log("📊 Fields:", dynamicFields.fields);
@@ -3573,164 +4103,155 @@ function renderDynamicFields(dynamicFields) {
     existingDynamicSection.remove();
   }
 
+  // Get current session data to check which fields exist
+  const result = await new Promise((resolve) => {
+    chrome.storage.local.get(["currentSession"], resolve);
+  });
+
+  const session = result.currentSession;
+  if (!session) {
+    console.error("❌ No current session found");
+    return;
+  }
+
   // Create dynamic fields section
   const dynamicFieldsSection = document.createElement("div");
   dynamicFieldsSection.className = "dynamic-fields-section";
-  dynamicFieldsSection.innerHTML = "<h3 class='card-title'>Session Data</h3>";
+  dynamicFieldsSection.innerHTML =
+    "<h3 class='card-title session-data-label'>Session Data</h3>";
 
-  // Get current session data to check which fields exist
-  chrome.storage.local.get(["currentSession"], async function (result) {
-    const session = result.currentSession;
-    if (!session) {
-      console.error("❌ No current session found");
-      return;
-    }
+  console.log("📋 Current session data:", session);
+  console.log("📋 Session keys:", Object.keys(session));
 
-    console.log("📋 Current session data:", session);
-    console.log("📋 Session keys:", Object.keys(session));
+  // Track if any confirmed results were actually added
+  let confirmedResultsAdded = 0;
 
-    // Process confirmed results - match with emr-types-fields using api_name
-    dynamicFields.confirmedResults.forEach((result) => {
-      console.log(`🔍 Processing confirmed result:`, result);
-      console.log(`🔍 Looking for field with api_name: ${result.key}`);
+  // Process confirmed results - match with emr-types-fields using api_name
+  dynamicFields.confirmedResults.forEach((result) => {
+    console.log(`🔍 Processing confirmed result:`, result);
+    console.log(`🔍 Looking for field with api_name: ${result.key}`);
 
-      // Find matching field definition by matching result.key with name (case-insensitive, remove dashes, normalize spaces)
-      const fieldDef = dynamicFields.fields.find((field) => {
-        if (!field.name) return false;
+    // Find matching field definition by matching result.key with name (case-insensitive, remove dashes, normalize spaces)
+    const fieldDef = dynamicFields.fields.find((field) => {
+      if (!field.name) return false;
 
-        const normalizedFieldName = field.name
-          .toLowerCase()
-          .replace(/-/g, "")
-          .replace(/\s+/g, "")
-          .trim();
+      const normalizedFieldName = field.name
+        .toLowerCase()
+        .replace(/-/g, "")
+        .replace(/\s+/g, "")
+        .trim();
 
-        const normalizedResultKey = result.key
-          .toLowerCase()
-          .replace(/-/g, "")
-          .replace(/\s+/g, "")
-          .trim();
+      const normalizedResultKey = result.key
+        .toLowerCase()
+        .replace(/-/g, "")
+        .replace(/\s+/g, "")
+        .trim();
 
-        console.log(
-          `🔍 Comparing: "${normalizedFieldName}" === "${normalizedResultKey}"`
-        );
-        console.log(
-          `🔍 Field name: "${field.name}" -> "${normalizedFieldName}"`
-        );
-        console.log(
-          `🔍 Result key: "${result.key}" -> "${normalizedResultKey}"`
-        );
+      console.log(
+        `🔍 Comparing: "${normalizedFieldName}" === "${normalizedResultKey}"`
+      );
+      console.log(`🔍 Field name: "${field.name}" -> "${normalizedFieldName}"`);
+      console.log(`🔍 Result key: "${result.key}" -> "${normalizedResultKey}"`);
 
-        return normalizedFieldName === normalizedResultKey;
-      });
-
-      console.log(`🔍 Found field definition:`, fieldDef);
-
-      if (fieldDef) {
-        // Use the api_name from the matched field definition to look in session data
-        const sessionKey = fieldDef.api_name;
-        console.log(
-          `🔍 Using api_name '${sessionKey}' to look in session data`
-        );
-        console.log(
-          `🔍 Session has key '${sessionKey}':`,
-          session.hasOwnProperty(sessionKey)
-        );
-        console.log(
-          `🔍 Session value for '${sessionKey}':`,
-          session[sessionKey]
-        );
-
-        // Display field if it exists in session data (regardless of value - even if empty/null)
-        if (session.hasOwnProperty(sessionKey)) {
-          console.log(
-            `✅ Adding dynamic field: ${fieldDef.name} = ${session[sessionKey]}`
-          );
-          const fieldElement = createDynamicFieldElement(
-            fieldDef.name, // Use the display name from emr-types-fields
-            session[sessionKey] !== null && session[sessionKey] !== undefined
-              ? session[sessionKey]
-              : "", // Preserve false/0 values for booleans
-            fieldDef.type
-          );
-          dynamicFieldsSection.appendChild(fieldElement);
-        } else {
-          console.log(`❌ Session does not have key: ${sessionKey}`);
-        }
-      } else {
-        console.log(`❌ No field definition found for key: ${result.key}`);
-      }
+      return normalizedFieldName === normalizedResultKey;
     });
 
-    // Add divider line before Modality fields
+    console.log(`🔍 Found field definition:`, fieldDef);
+
+    if (fieldDef) {
+      // Use the api_name from the matched field definition to look in session data
+      const sessionKey = fieldDef.api_name;
+      console.log(`🔍 Using api_name '${sessionKey}' to look in session data`);
+      console.log(
+        `🔍 Session has key '${sessionKey}':`,
+        session.hasOwnProperty(sessionKey)
+      );
+      console.log(`🔍 Session value for '${sessionKey}':`, session[sessionKey]);
+
+      // Display field if it exists in session data (regardless of value - even if empty/null)
+      if (session.hasOwnProperty(sessionKey)) {
+        console.log(
+          `✅ Adding dynamic field: ${fieldDef.name} = ${session[sessionKey]}`
+        );
+        const fieldElement = createDynamicFieldElement(
+          fieldDef.name, // Use the display name from emr-types-fields
+          session[sessionKey] !== null && session[sessionKey] !== undefined
+            ? session[sessionKey]
+            : "", // Preserve false/0 values for booleans
+          fieldDef.type
+        );
+        dynamicFieldsSection.appendChild(fieldElement);
+        confirmedResultsAdded++;
+      } else {
+        console.log(`❌ Session does not have key: ${sessionKey}`);
+      }
+    } else {
+      console.log(`❌ No field definition found for key: ${result.key}`);
+    }
+  });
+
+  // Add divider line before Modality fields only if confirmed results were actually rendered
+  if (confirmedResultsAdded > 0) {
     const dividerLine = document.createElement("div");
     dividerLine.style.cssText =
-      "width: 100%; height: 1px; background-color: #e5e7eb; margin: 4px 0;";
+      "width: 100%; height: 2px; background-color: #d1d5db; margin: 20px 0 4px 0;";
     dynamicFieldsSection.appendChild(dividerLine);
+  }
 
-    // Add Modality and Modality Steps fields (right after confirmed results, before manual fields)
-    await addModalityFieldsToView(session, dynamicFields, dynamicFieldsSection);
+  // Add Modality and Modality Steps fields (right after confirmed results, before manual fields)
+  await addModalityFieldsToView(session, dynamicFields, dynamicFieldsSection);
 
-    // Process manual fields - match with emr-types-fields using api_name
-    dynamicFields.manualFields.forEach((field) => {
-      console.log(`🔍 Processing manual field:`, field);
-      console.log(`🔍 Looking for field with api_name: ${field.name}`);
+  // Process manual fields - match with emr-types-fields using api_name
+  dynamicFields.manualFields.forEach((field) => {
+    console.log(`🔍 Processing manual field:`, field);
+    console.log(`🔍 Looking for field with api_name: ${field.name}`);
 
-      // Find matching field definition by matching field.name with name (case-insensitive, remove dashes, normalize spaces)
-      const fieldDef = dynamicFields.fields.find(
-        (f) =>
-          f.name &&
-          f.name.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim() ===
-            field.name
-              .toLowerCase()
-              .replace(/-/g, "")
-              .replace(/\s+/g, " ")
-              .trim()
+    // Find matching field definition by matching field.name with name (case-insensitive, remove dashes, normalize spaces)
+    const fieldDef = dynamicFields.fields.find(
+      (f) =>
+        f.name &&
+        f.name.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim() ===
+          field.name.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim()
+    );
+
+    console.log(`🔍 Found field definition:`, fieldDef);
+
+    if (fieldDef) {
+      // Use the api_name from the matched field definition to look in session data
+      const sessionKey = fieldDef.api_name;
+      console.log(`🔍 Using api_name '${sessionKey}' to look in session data`);
+      console.log(
+        `🔍 Session has key '${sessionKey}':`,
+        session.hasOwnProperty(sessionKey)
       );
+      console.log(`🔍 Session value for '${sessionKey}':`, session[sessionKey]);
 
-      console.log(`🔍 Found field definition:`, fieldDef);
-
-      if (fieldDef) {
-        // Use the api_name from the matched field definition to look in session data
-        const sessionKey = fieldDef.api_name;
+      // Display field if it exists in session data (regardless of value - even if empty/null)
+      if (session.hasOwnProperty(sessionKey)) {
         console.log(
-          `🔍 Using api_name '${sessionKey}' to look in session data`
+          `✅ Adding manual field: ${fieldDef.name} = ${session[sessionKey]}`
         );
-        console.log(
-          `🔍 Session has key '${sessionKey}':`,
-          session.hasOwnProperty(sessionKey)
+        const fieldElement = createDynamicFieldElement(
+          fieldDef.name, // Use the display name from emr-types-fields
+          session[sessionKey] !== null && session[sessionKey] !== undefined
+            ? session[sessionKey]
+            : "", // Preserve false/0 values for booleans
+          fieldDef.type
         );
-        console.log(
-          `🔍 Session value for '${sessionKey}':`,
-          session[sessionKey]
-        );
-
-        // Display field if it exists in session data (regardless of value - even if empty/null)
-        if (session.hasOwnProperty(sessionKey)) {
-          console.log(
-            `✅ Adding manual field: ${fieldDef.name} = ${session[sessionKey]}`
-          );
-          const fieldElement = createDynamicFieldElement(
-            fieldDef.name, // Use the display name from emr-types-fields
-            session[sessionKey] !== null && session[sessionKey] !== undefined
-              ? session[sessionKey]
-              : "", // Preserve false/0 values for booleans
-            fieldDef.type
-          );
-          dynamicFieldsSection.appendChild(fieldElement);
-        } else {
-          console.log(`❌ Session does not have key: ${sessionKey}`);
-        }
+        dynamicFieldsSection.appendChild(fieldElement);
       } else {
-        console.log(
-          `❌ No field definition found for manual field: ${field.name}`
-        );
+        console.log(`❌ Session does not have key: ${sessionKey}`);
       }
-    });
-
-    // Add dynamic fields section to the session details
-    sessionDetailsContainer.appendChild(dynamicFieldsSection);
-    console.log("✅ Dynamic fields rendered successfully");
+    } else {
+      console.log(
+        `❌ No field definition found for manual field: ${field.name}`
+      );
+    }
   });
+
+  // Add dynamic fields section to the session details
+  sessionDetailsContainer.appendChild(dynamicFieldsSection);
+  console.log("✅ Dynamic fields rendered successfully");
 }
 
 // Function to add Modality and Modality Steps fields to session view
@@ -10652,7 +11173,7 @@ async function captureFastHTML() {
   });
 
   // Show loading state
-  const button = document.querySelector(".send-button");
+  const button = document.getElementById("send-emr-request-btn");
   if (button) {
     button.textContent = "Sending...";
     button.disabled = true;
@@ -10804,7 +11325,7 @@ function createSingleFileHTML(singleFileData) {
     console.log("✅ SingleFile HTML downloaded successfully");
 
     // Reset button
-    const button = document.querySelector(".send-button");
+    const button = document.getElementById("send-emr-request-btn");
     if (button) {
       button.textContent = "Send EMR Request";
       button.disabled = false;
@@ -10814,7 +11335,7 @@ function createSingleFileHTML(singleFileData) {
     showErrorMessage(`Error creating SingleFile HTML: ${error.message}`);
 
     // Reset button
-    const button = document.querySelector(".send-button");
+    const button = document.getElementById("send-emr-request-btn");
     if (button) {
       button.textContent = "Send EMR Request";
       button.disabled = false;
@@ -10890,7 +11411,7 @@ function createSimpleHTML(captureData) {
     console.log("✅ Simple HTML file created and downloaded");
 
     // Reset button
-    const button = document.querySelector(".send-button");
+    const button = document.getElementById("send-emr-request-btn");
     if (button) {
       button.textContent = "Send EMR Request";
       button.disabled = false;
@@ -10900,7 +11421,7 @@ function createSimpleHTML(captureData) {
     showErrorMessage(`Error creating HTML file: ${error.message}`);
 
     // Reset button
-    const button = document.querySelector(".send-button");
+    const button = document.getElementById("send-emr-request-btn");
     if (button) {
       button.textContent = "Send EMR Request";
       button.disabled = false;
@@ -11925,12 +12446,7 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
       "auto-manual-fields-container"
     );
     manualContainer.innerHTML = ""; // Clear
-
-    // Add divider line before Modality fields
-    const dividerLine = document.createElement("div");
-    dividerLine.style.cssText =
-      "width: 100%; height: 1px; background-color: #e5e7eb; margin: 4px 0;";
-    manualContainer.appendChild(dividerLine);
+    // Divider will be added only when switching to edit mode
 
     // Fetch modalities and modality steps from API
     console.log("📥 Fetching modalities and modality steps...");

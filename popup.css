@@ -2263,6 +2263,13 @@ select.edit-input {
   font-size: 18px;
   font-weight: 600;
   color: #333;
+  background-color: white;
+  text-align: center;
+  padding: 12px 20px;
+  border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  white-space: nowrap;
 }
 
 .session-tabs-container {
@@ -2358,7 +2365,8 @@ select.edit-input {
   overflow: visible; /* Allow content to be fully visible */
 }
 
-#auto-session-detail-card .card-title {
+#auto-session-detail-card
+  .card-title:not(.session-details-label):not(.session-data-label) {
   font-size: 18px;
   font-weight: 600;
   color: #333;
@@ -3158,6 +3166,31 @@ select.editable-input:disabled,
   color: #333;
 }
 
+/* Session Details and Session Data Labels - Styled with white background */
+.session-details-label,
+.session-data-label {
+  background-color: white !important;
+  color: #333 !important;
+  text-align: center !important;
+  padding: 12px 20px !important;
+  border-radius: 6px !important;
+  margin: 0 auto 20px auto !important;
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  width: calc(100% - 8px) !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  white-space: nowrap !important;
+  display: block !important;
+  grid-column: 1 / -1 !important; /* Span full grid width */
+  border: 1px solid #e5e7eb !important; /* Add border to make background visible */
+}
+
+/* Extra spacing for Session Data label to prevent collision with Instructions field */
+.session-data-label {
+  margin-top: 24px !important;
+}
+
 /* Client History Card Full Width */
 .client-history-card {
   width: 100%;
@@ -3686,7 +3719,7 @@ select.editable-input:disabled,
   font-size: 16px;
   font-weight: 600;
   cursor: pointer;
-  transition: transform 0.2s, box-shadow 0.2s;
+  transition: transform 0.2s, box-shadow 0.2s, opacity 0.15s ease;
 }
 
 .send-button:hover {
@@ -3696,6 +3729,28 @@ select.editable-input:disabled,
 
 .send-button:active {
   transform: translateY(0);
+}
+
+/* Disabled state for send-style buttons */
+.send-button:disabled {
+  background: #c9b6f0;
+  opacity: 0.6;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.send-button:disabled:hover,
+.send-button:disabled:active {
+  box-shadow: none;
+  transform: none;
+}
+
+/* Stack and space EMR "Found" / "Not found" buttons */
+#existing-emr-actions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* Full width EMR pairs */

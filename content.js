@@ -61,17 +61,17 @@
   toggleBtn.addEventListener("mousedown", (e) => {
     clickStartTime = Date.now();
     clickStartY = e.clientY;
-    
+
     // Start dragging
     isDragging = true;
     dragStartY = e.clientY;
-    
+
     // Get current top position
     const currentTop = toggleBtn.style.top;
     dragStartTop = currentTop.includes("%")
       ? (parseFloat(currentTop) / 100) * window.innerHeight
       : parseFloat(currentTop);
-    
+
     toggleBtn.style.cursor = "grabbing";
     toggleBtn.style.transition = "none"; // Disable transition during drag
     e.preventDefault();
@@ -81,13 +81,13 @@
     if (isDragging) {
       const deltaY = e.clientY - dragStartY;
       let newTop = dragStartTop + deltaY;
-      
+
       // Constrain to viewport bounds
       const buttonHeight = 48;
       const minTop = buttonHeight / 2;
       const maxTop = window.innerHeight - buttonHeight / 2;
       newTop = Math.max(minTop, Math.min(maxTop, newTop));
-      
+
       toggleBtn.style.top = `${newTop}px`;
       toggleBtn.style.transform = "translateY(-50%)";
     }
@@ -97,28 +97,32 @@
     if (isDragging) {
       const clickDuration = Date.now() - clickStartTime;
       const clickDistance = Math.abs(dragStartY - clickStartY);
-      
+
       isDragging = false;
       toggleBtn.style.cursor = "pointer"; // Back to pointer cursor
-      toggleBtn.style.transition = "background-color 0.3s ease, width 0.3s ease";
-      
+      toggleBtn.style.transition =
+        "background-color 0.3s ease, width 0.3s ease";
+
       // Save position to storage
       const currentTop = toggleBtn.style.top;
       chrome.storage.local.set({ toggleButtonTop: currentTop });
-      
+
       // Only toggle if it was a quick click (not a drag)
       if (clickDuration < 200 && clickDistance < 5) {
         console.log("SessyNote: Toggle button clicked");
-        chrome.runtime.sendMessage({ action: "toggleSidePanel" }, (response) => {
-          if (chrome.runtime.lastError) {
-            console.error(
-              "SessyNote: Error sending message:",
-              chrome.runtime.lastError
-            );
-          } else {
-            console.log("SessyNote: Message sent successfully");
+        chrome.runtime.sendMessage(
+          { action: "toggleSidePanel" },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              console.error(
+                "SessyNote: Error sending message:",
+                chrome.runtime.lastError
+              );
+            } else {
+              console.log("SessyNote: Message sent successfully");
+            }
           }
-        });
+        );
       }
     }
   });
@@ -187,7 +191,7 @@
       const buttonHeight = 48;
       const minTop = buttonHeight / 2;
       const maxTop = window.innerHeight - buttonHeight / 2;
-      
+
       if (topValue < minTop || topValue > maxTop) {
         const constrainedTop = Math.max(minTop, Math.min(maxTop, topValue));
         toggleBtn.style.top = `${constrainedTop}px`;
@@ -205,24 +209,132 @@
 // ===============================
 
 // Check URL on page load and navigation
-(async function () {
-  console.log("SessyNote: Auto-scraping initialized");
+// Track the currently matched EMR config so we can reuse it (e.g. for popups)
+let activeEmrConfig = null; // { emrTypeId, emrResponse }
 
-  // Check URL when page loads
-  await checkAndScrapeIfMatch();
+// Track popup / late-content scraping state
+let lateContentObserver = null;
+let lateScrapeScheduled = false;
+let sessionAlreadyScraped = false;
 
-  // Listen for URL changes (for SPAs)
-  let lastUrl = window.location.href;
-  const urlObserver = new MutationObserver(async () => {
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      console.log("SessyNote: URL changed to", lastUrl);
-      await checkAndScrapeIfMatch();
+// Helper to stop late-content monitoring once we successfully scrape
+function stopLateContentObserver() {
+  if (lateContentObserver) {
+    lateContentObserver.disconnect();
+    lateContentObserver = null;
+  }
+}
+
+// Decide what DOM subtree to scrape from.
+// For normal pages, this is the whole document.
+// For popup-based EMR types (is_popup + popup_root_selector), this will be the popup container.
+function getScrapeRoot() {
+  // If current EMR type is marked as popup-based and has a popup_root_selector,
+  // try to find that popup container and use it as the scraping root.
+  if (
+    activeEmrConfig &&
+    activeEmrConfig.isPopup &&
+    activeEmrConfig.popupRootSelector
+  ) {
+    try {
+      const popup = document.querySelector(activeEmrConfig.popupRootSelector);
+      if (popup) {
+        console.log(
+          "SessyNote: Using popup root for scrape:",
+          activeEmrConfig.popupRootSelector
+        );
+        return popup;
+      }
+    } catch (e) {
+      console.error(
+        "SessyNote: Error using popup_root_selector as scrape root:",
+        e
+      );
     }
+  }
+
+  // Fallback: scrape entire document (existing behavior)
+  return document;
+}
+
+// Try scraping again after new content appears (e.g. popup opened)
+async function tryLateScrape() {
+  if (!activeEmrConfig || sessionAlreadyScraped) {
+    return;
+  }
+
+  console.log(
+    "SessyNote: Detected DOM changes after initial check, trying late scrape (e.g. popup)..."
+  );
+
+  const root = getScrapeRoot();
+  const scrapedData = scrapePageData(activeEmrConfig.emrResponse, root);
+  console.log("SessyNote: Late-scrape data:", scrapedData);
+
+  const foundValuesCount = Object.keys(scrapedData).length;
+  // Require at least 5 values to consider this a valid session (same as non-popup)
+  const minFields = 5;
+  if (foundValuesCount < minFields) {
+    console.log(
+      `SessyNote: Late scrape only found ${foundValuesCount} value(s). Need at least ${minFields}. Waiting for more content...`
+    );
+    return;
+  }
+
+  console.log(
+    `SessyNote: Late scrape found ${foundValuesCount} values - treating this as a session page (likely popup). Proceeding...`
+  );
+
+  sessionAlreadyScraped = true;
+  stopLateContentObserver();
+
+  chrome.runtime.sendMessage({
+    action: "autoFillSession",
+    data: {
+      scrapedData: scrapedData,
+      emrTypeId: activeEmrConfig.emrTypeId,
+    },
+  });
+}
+
+// Start observing the DOM for new content (e.g. popup or lazy-loaded panel)
+function ensureLateContentObserver() {
+  // Only enable late-content watching for popup EMR types.
+  if (
+    !activeEmrConfig ||
+    !activeEmrConfig.isPopup ||
+    lateContentObserver ||
+    sessionAlreadyScraped
+  ) {
+    return;
+  }
+
+  console.log(
+    "SessyNote: Starting DOM observer to watch for late content (e.g. popup session)..."
+  );
+
+  lateContentObserver = new MutationObserver(() => {
+    if (sessionAlreadyScraped) {
+      stopLateContentObserver();
+      return;
+    }
+
+    // Debounce multiple rapid mutations
+    if (lateScrapeScheduled) return;
+    lateScrapeScheduled = true;
+
+    setTimeout(async () => {
+      lateScrapeScheduled = false;
+      await tryLateScrape();
+    }, 1000);
   });
 
-  urlObserver.observe(document.body, { childList: true, subtree: true });
-})();
+  lateContentObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+  });
+}
 
 async function checkAndScrapeIfMatch() {
   try {
@@ -249,6 +361,7 @@ async function checkAndScrapeIfMatch() {
         // Match found! Use the matched EMR type
         const emrTypeId = response.emrTypeId;
         const emrResponse = response.emrResponse;
+        const emrType = response.emrType || {};
 
         console.log(
           "SessyNote: ✅ URL match found! Using EMR Type ID:",
@@ -260,26 +373,49 @@ async function checkAndScrapeIfMatch() {
           return;
         }
 
+        // Cache active EMR config so we can reuse it if more content (like a popup) appears later
+        activeEmrConfig = {
+          emrTypeId,
+          emrResponse,
+          // Popup metadata comes from backend EMR type definition
+          isPopup: !!emrType.is_popup,
+          popupRootSelector: emrType.popup_root_selector || null,
+        };
+        sessionAlreadyScraped = false;
+
         // Wait for QuickBase page to fully load (takes longer due to dynamic content)
         await new Promise((resolve) => setTimeout(resolve, 10000));
 
-        // Scrape data from page
-        const scrapedData = scrapePageData(emrResponse);
+        // Scrape data from page (or popup if one is open)
+        const root = getScrapeRoot();
+        const scrapedData = scrapePageData(emrResponse, root);
 
         console.log("SessyNote: Scraped data:", scrapedData);
 
-        // Check if at least 5 values were found
+        // Check if enough values were found
         const foundValuesCount = Object.keys(scrapedData).length;
-        if (foundValuesCount < 5) {
+        // Require at least 5 fields for both popup and non-popup EMR types
+        const minFields = 5;
+        if (foundValuesCount < minFields) {
           console.log(
-            `SessyNote: Only found ${foundValuesCount} value(s). Need at least 5 to consider this a session page. Skipping...`
+            `SessyNote: Only found ${foundValuesCount} value(s). Need at least ${minFields} to consider this a session page.`
           );
+
+          // For popup EMR types, start watching for DOM changes so we can
+          // rescrape when the popup actually appears. For non-popup EMR
+          // types, we just stop here (no repeated automatic scraping).
+          if (activeEmrConfig.isPopup) {
+            ensureLateContentObserver();
+          }
           return;
         }
 
         console.log(
           `SessyNote: Found ${foundValuesCount} values - this appears to be a session page. Proceeding...`
         );
+
+        sessionAlreadyScraped = true;
+        stopLateContentObserver();
 
         // Send to background script
         chrome.runtime.sendMessage({
@@ -296,7 +432,33 @@ async function checkAndScrapeIfMatch() {
   }
 }
 
-function scrapePageData(responseFields) {
+// Initialize auto-scraping on page load and URL changes
+(async function () {
+  console.log("SessyNote: Auto-scraping initialized");
+
+  // Check URL when page loads
+  await checkAndScrapeIfMatch();
+
+  // Listen for URL changes (for SPAs)
+  let lastUrl = window.location.href;
+  const urlObserver = new MutationObserver(async () => {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      console.log("SessyNote: URL changed to", lastUrl);
+
+      // Reset state for the new URL
+      activeEmrConfig = null;
+      sessionAlreadyScraped = false;
+      stopLateContentObserver();
+
+      await checkAndScrapeIfMatch();
+    }
+  });
+
+  urlObserver.observe(document.body, { childList: true, subtree: true });
+})();
+
+function scrapePageData(responseFields, root = document) {
   const scrapedData = {};
   console.log(
     "🔍 SessyNote: Starting page scrape with",
@@ -325,7 +487,7 @@ function scrapePageData(responseFields) {
         try {
           const result = document.evaluate(
             source.xpath,
-            document,
+            root,
             null,
             XPathResult.FIRST_ORDERED_NODE_TYPE,
             null
@@ -353,7 +515,7 @@ function scrapePageData(responseFields) {
           `🔍 SessyNote: Using CSS selector for ${fieldName}:`,
           source.selector
         );
-        element = document.querySelector(source.selector);
+        element = root.querySelector(source.selector);
 
         if (element) {
           const attribute = source.attribute || "textContent";

@@ -156,7 +156,34 @@
             </div>
           </div>
 
-          <div class="form-container">
+          <!-- Step 1: Check if EMR type exists for current site -->
+          <div class="form-container" id="emr-types-exist-section">
+            <div class="input-group">
+              <button class="send-button" id="check-emr-types-btn">EMR type exist ?</button>
+            </div>
+
+            <div class="input-group" id="existing-emr-select-group" style="display: none;">
+              <label class="input-label">Existing EMR Types for this site</label>
+              <div class="input-wrapper">
+                <select class="form-input" id="existing-emr-type-select">
+                  <option value="">Select EMR Type</option>
+                </select>
+                <div class="dropdown-arrow"></div>
+              </div>
+            </div>
+
+            <div class="input-group" id="existing-emr-actions-group" style="display: none;">
+              <button class="send-button" id="existing-emr-found-btn" disabled>
+                Found
+              </button>
+              <button class="send-button" id="existing-emr-not-found-btn">
+                Not found
+              </button>
+            </div>
+          </div>
+
+          <!-- Step 2: Fallback - create new EMR type (original form) -->
+          <div class="form-container" id="new-emr-type-form-container" style="display: none;">
             <!-- EMR Type -->
             <div class="input-group">
               <label class="input-label">EMR Type</label>
@@ -197,7 +224,7 @@
             </div>
 
             <!-- Send Button -->
-            <button class="send-button">Send EMR Request</button>
+            <button class="send-button" id="send-emr-request-btn">Send EMR Request</button>
           </div>
         </div>
 
@@ -617,7 +644,7 @@
           <div class="tab-content active" id="session-info-content">
             <!-- Session Details Card -->
             <div class="detail-card">
-              <h2 class="card-title">Session Details</h2>
+              <h2 class="card-title session-details-label">Session Details</h2>
               
               <div class="session-detail-item">
                 <span class="detail-label">Client</span>
@@ -728,7 +755,7 @@
           <!-- Session Info Tab Content -->
           <div class="tab-content active" id="auto-session-info-content">
             <div class="detail-card" id="auto-session-detail-card">
-              <h2 class="card-title">Session Details</h2>
+              <h2 class="card-title session-details-label">Session Details</h2>
               <div class="session-detail-item view-mode" id="auto-client-container">
                 <span class="detail-label">Client</span>
                 <span class="detail-value" id="auto-client">-</span>
@@ -741,7 +768,7 @@
                 <span class="detail-label">Instructions</span>
                 <span class="detail-value" id="auto-instructions">-</span>
               </div>
-              <h3 class="card-title" id="auto-session-data-title" style="margin-top: 20px; margin-bottom: 16px;">Session Data</h3>
+              <h3 class="card-title session-data-label" id="auto-session-data-title">Session Data</h3>
               <div id="auto-confirmed-results-container"></div>
               <div id="auto-manual-fields-container"></div>
             </div>
