@@ -6,15 +6,51 @@ const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
 
 // Track side panel state per window
 const sidePanelState = new Map();
+let clickCount = 0;
+let lastClickTime = 0;
 
 // Handle extension icon click to toggle side panel
 chrome.action.onClicked.addListener(async (tab) => {
+  clickCount++;
+  const now = Date.now();
+  const timeSinceLastClick = now - lastClickTime;
+  lastClickTime = now;
+  
+  console.log("======================================");
+  console.log(`SessyNote: Extension icon clicked #${clickCount}`);
+  console.log(`SessyNote: Time since last click: ${timeSinceLastClick}ms`);
+  console.log("SessyNote: Tab info:", {
+    id: tab.id,
+    windowId: tab.windowId,
+    url: tab.url,
+    status: tab.status
+  });
+  console.log("SessyNote: Current side panel state:", sidePanelState.get(tab.windowId));
+  
   try {
+    console.log("SessyNote: Attempting to open side panel...");
+    const startTime = Date.now();
+    
     await chrome.sidePanel.open({ windowId: tab.windowId });
+    
+    const duration = Date.now() - startTime;
+    console.log(`SessyNote: ✅ Side panel opened successfully in ${duration}ms`);
     sidePanelState.set(tab.windowId, true);
   } catch (error) {
-    console.error("Error opening side panel:", error);
+    console.error("SessyNote: ❌ Error opening side panel:", error);
+    console.error("SessyNote: Error name:", error.name);
+    console.error("SessyNote: Error message:", error.message);
+    console.error("SessyNote: Error stack:", error.stack);
+    
+    // Try to get more info about why it failed
+    try {
+      const windows = await chrome.windows.getAll();
+      console.log("SessyNote: Available windows:", windows.map(w => w.id));
+    } catch (e) {
+      console.error("SessyNote: Could not get windows:", e);
+    }
   }
+  console.log("======================================");
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

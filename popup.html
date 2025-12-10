@@ -192,11 +192,12 @@
               </div>
             </div>
 
-            <!-- Session Type -->
+            <!-- Session Type (for EMR Request form) -->
             <div class="input-group">
               <label class="input-label">Session Type</label>
               <div class="input-wrapper">
-                <select class="form-input" id="session-type">
+                <!-- NOTE: Use a unique ID here to avoid clashing with the Session Details EMR Type field -->
+                <select class="form-input" id="session-type-select">
                   <option value="">Select Session Type</option>
                   <option value="individual">Individual Therapy</option>
                   <option value="group">Group Therapy</option>

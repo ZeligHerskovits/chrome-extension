@@ -151,12 +151,32 @@ async function getEMRTypeName(emrTypeId) {
 // Function to fetch session detail fields for EMR type
 async function getSessionDetailFields(emrTypeId) {
   try {
-    // Check if we already have this data cached
+    // Check if we already have this data cached (with a short TTL).
+    // NOTE: Previously we cached forever, so if you changed EMR fields /
+    // confirmed results in Noted, the extension would keep showing the old
+    // set. We now treat any cache older than a few minutes as stale and
+    // force a fresh fetch, while still reusing very recent data.
     const cacheKey = `session_fields_${emrTypeId}`;
-    const cached = await chrome.storage.local.get([cacheKey]);
-    if (cached[cacheKey]) {
-      console.log("📋 Using cached session fields:", cached[cacheKey]);
-      return cached[cacheKey];
+    const { [cacheKey]: cachedEntry } = await chrome.storage.local.get([
+      cacheKey,
+    ]);
+
+    // Keep cache very fresh: only reuse data for a few seconds to avoid
+    // hammering the API while still reflecting backend changes quickly.
+    const CACHE_TTL_MS = 5 * 1000; // 5 seconds
+
+    if (
+      cachedEntry &&
+      cachedEntry.confirmedResults &&
+      cachedEntry.fields &&
+      cachedEntry.manualFields &&
+      typeof cachedEntry.__fetchedAt === "number" &&
+      Date.now() - cachedEntry.__fetchedAt < CACHE_TTL_MS
+    ) {
+      console.log("📋 Using cached session fields (fresh):", cachedEntry);
+      // Strip internal metadata before returning, to keep shape identical
+      const { __fetchedAt, ...sessionFields } = cachedEntry;
+      return sessionFields;
     }
 
     // Get access token
@@ -251,8 +271,10 @@ async function getSessionDetailFields(emrTypeId) {
       manualFields,
     };
 
-    // Cache the data
-    await chrome.storage.local.set({ [cacheKey]: sessionFields });
+    // Cache the data with a timestamp so we can invalidate it later
+    await chrome.storage.local.set({
+      [cacheKey]: { ...sessionFields, __fetchedAt: Date.now() },
+    });
 
     return sessionFields;
   } catch (error) {
@@ -930,6 +952,75 @@ async function handleExistingEmrFound(selectedEmrTypeId) {
 
     const emrTypeId = String(selectedEmrTypeId);
     const emrTypeName = emrObj?.name || `EMR #${emrTypeId}`;
+
+    // Ensure the selected EMR also appears in the Company Info "EMR" field
+    // (blue tags). This keeps the profile's company.emr list in sync when
+    // a user confirms an existing EMR via the "Found" button.
+    try {
+      const company = window.currentProfileData.company;
+      if (company && emrTypeName) {
+        let emrArray = Array.isArray(company.emr)
+          ? [...company.emr]
+          : company.emr
+          ? [company.emr]
+          : [];
+
+        const normalizedExisting = emrArray.map((n) =>
+          (n || "").toString().toLowerCase().trim()
+        );
+        const normalizedNew = emrTypeName.toString().toLowerCase().trim();
+
+        if (!normalizedExisting.includes(normalizedNew)) {
+          emrArray.push(emrTypeName);
+
+          const companyId = company.id;
+          if (companyId) {
+            const tokenResult = await chrome.storage.local.get(["accessToken"]);
+            if (tokenResult.accessToken) {
+              const companyPayload = {
+                name: company.name || "",
+                industry: company.industry || "",
+                emr: emrArray,
+                address: company.address || "",
+                is_active: !!company.is_active,
+              };
+
+              console.log(
+                "📦 Updating Company EMR from Found button:",
+                companyPayload
+              );
+
+              const companyResponse = await fetch(
+                `${API_BASE_URL}/company/${companyId}`,
+                {
+                  method: "PUT",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${tokenResult.accessToken}`,
+                  },
+                  body: JSON.stringify(companyPayload),
+                }
+              );
+
+              if (!check401Response(companyResponse) && companyResponse.ok) {
+                const updatedCompany = await companyResponse.json();
+                window.currentProfileData.company = updatedCompany;
+                console.log(
+                  "✅ Company EMR updated from Found button:",
+                  updatedCompany
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (companyError) {
+      console.error(
+        "❌ Failed to update Company EMR from Found button:",
+        companyError
+      );
+      // Non-fatal: continue with EMR pair creation even if company update fails.
+    }
 
     // Determine documentation method: prefer from EMR object, fall back to first existing pair
     let documentationMethodId =
@@ -1865,6 +1956,13 @@ function setupClientsPageHandlers() {
   if (profilePersonalTab && profileEmrTab) {
     profilePersonalTab.addEventListener("click", function () {
       // Switch to Personal Info tab
+      // If EMR Personalization is currently in edit mode, cancel it
+      try {
+        cancelEditEMRInfo();
+      } catch (e) {
+        console.warn("⚠️ Unable to cancel EMR edit on tab switch:", e);
+      }
+
       profilePersonalTab.classList.add("active");
       profileEmrTab.classList.remove("active");
       profilePersonalContent.classList.add("active");
@@ -1875,6 +1973,16 @@ function setupClientsPageHandlers() {
 
     profileEmrTab.addEventListener("click", function () {
       // Switch to EMR Personalization tab
+      // If Personal Info is currently in edit mode, cancel it
+      try {
+        cancelEditPersonalInfo();
+      } catch (e) {
+        console.warn(
+          "⚠️ Unable to cancel Personal Info edit on tab switch:",
+          e
+        );
+      }
+
       profileEmrTab.classList.add("active");
       profilePersonalTab.classList.remove("active");
       profileEmrContent.classList.add("active");
@@ -3318,11 +3426,34 @@ async function showSessionDetail(session) {
   // Setup session tab functionality after page is shown
   setupSessionTabHandlers();
 
-  // Set initial button text for Session Info tab (default active)
-  updateSessionButtons("session-info");
+  // Ensure Session Info is the default active tab whenever we open a session
+  setTimeout(() => {
+    const sessionInfoTab = document.getElementById("session-info-tab");
+    const sessionActivityTab = document.getElementById("session-activity-tab");
+    const sessionInfoContent = document.getElementById("session-info-content");
+    const sessionActivityContent = document.getElementById(
+      "session-activity-content"
+    );
 
-  // Show session details for Session Info tab (default active)
-  showSessionDetailsForSessionInfo();
+    if (
+      sessionInfoTab &&
+      sessionActivityTab &&
+      sessionInfoContent &&
+      sessionActivityContent
+    ) {
+      sessionInfoTab.classList.add("active");
+      sessionActivityTab.classList.remove("active");
+      sessionInfoContent.classList.add("active");
+      sessionActivityContent.classList.remove("active");
+
+      // Clear any AI Notes inline edit state when entering Session Info
+      resetAINotesInlineEditing();
+
+      // Set initial button text and show the correct header content
+      updateSessionButtons("session-info");
+      showSessionDetailsForSessionInfo();
+    }
+  }, 200);
 
   console.log("✅ showSessionDetail completed");
 }
@@ -3357,6 +3488,9 @@ function setupSessionTabHandlers() {
     );
 
     freshSessionInfoTab.addEventListener("click", async function () {
+      // Leaving AI Notes tab – close any open AI Notes edit modes
+      resetAINotesInlineEditing();
+
       // Switch to Session Info tab
       freshSessionInfoTab.classList.add("active");
       freshSessionActivityTab.classList.remove("active");
@@ -3407,6 +3541,16 @@ function switchToAINotesTab() {
     sessionInfoTab.classList.remove("active");
     sessionActivityContent.classList.add("active");
     sessionInfoContent.classList.remove("active");
+
+    // Ensure any previous edit state is cleared before (re)attaching editors
+    resetAINotesInlineEditing();
+
+    // Ensure inline editing controls are attached when AI Notes tab is active
+    try {
+      setupAINotesInlineEditing();
+    } catch (e) {
+      console.warn("⚠️ Failed to set up AI Notes inline editing:", e);
+    }
 
     // Hide session detected banner and session details for AI Notes tab
     hideSessionDetailsForAINotes();
@@ -4125,6 +4269,9 @@ async function renderDynamicFields(dynamicFields) {
 
   // Track if any confirmed results were actually added
   let confirmedResultsAdded = 0;
+  
+  // Track fields we've already added to prevent duplicates
+  const addedFields = new Set();
 
   // Process confirmed results - match with emr-types-fields using api_name
   dynamicFields.confirmedResults.forEach((result) => {
@@ -4167,6 +4314,12 @@ async function renderDynamicFields(dynamicFields) {
         session.hasOwnProperty(sessionKey)
       );
       console.log(`🔍 Session value for '${sessionKey}':`, session[sessionKey]);
+      
+      // Skip if we've already added this field (check by api_name)
+      if (addedFields.has(sessionKey)) {
+        console.log(`⏭️ Skipping duplicate field with api_name: ${sessionKey}`);
+        return;
+      }
 
       // Display field if it exists in session data (regardless of value - even if empty/null)
       if (session.hasOwnProperty(sessionKey)) {
@@ -4182,6 +4335,9 @@ async function renderDynamicFields(dynamicFields) {
         );
         dynamicFieldsSection.appendChild(fieldElement);
         confirmedResultsAdded++;
+        
+        // Mark this field as added
+        addedFields.add(sessionKey);
       } else {
         console.log(`❌ Session does not have key: ${sessionKey}`);
       }
@@ -4225,6 +4381,12 @@ async function renderDynamicFields(dynamicFields) {
         session.hasOwnProperty(sessionKey)
       );
       console.log(`🔍 Session value for '${sessionKey}':`, session[sessionKey]);
+      
+      // Skip if we've already added this field (check by api_name)
+      if (addedFields.has(sessionKey)) {
+        console.log(`⏭️ Skipping duplicate manual field with api_name: ${sessionKey}`);
+        return;
+      }
 
       // Display field if it exists in session data (regardless of value - even if empty/null)
       if (session.hasOwnProperty(sessionKey)) {
@@ -4239,6 +4401,9 @@ async function renderDynamicFields(dynamicFields) {
           fieldDef.type
         );
         dynamicFieldsSection.appendChild(fieldElement);
+        
+        // Mark this field as added
+        addedFields.add(sessionKey);
       } else {
         console.log(`❌ Session does not have key: ${sessionKey}`);
       }
@@ -4256,14 +4421,78 @@ async function renderDynamicFields(dynamicFields) {
 
 // Function to add Modality and Modality Steps fields to session view
 async function addModalityFieldsToView(session, dynamicFields, container) {
-  // Modality and Modality Steps are stored on the session as
-  // `modality` and `modality_step` (UUID strings). Always read those keys
-  // so the view matches what we saved when generating from the detected session.
-  const modalityId = session.modality;
-  const modalityStepsId = session.modality_step;
+  // In many EMR Types, Modality/Modality Steps are stored using custom api_name
+  // fields (e.g. not literally "modality"). The edit popup already resolves
+  // these via dynamicFields.fields; view mode must use the same logic so both
+  // modes show the same values.
 
-  console.log("🔍 Modality ID from session:", modalityId);
-  console.log("🔍 Modality Steps ID from session:", modalityStepsId);
+  let modalityId = null;
+  let modalityStepsId = null;
+
+  try {
+    if (
+      dynamicFields &&
+      Array.isArray(dynamicFields.fields) &&
+      dynamicFields.fields.length > 0
+    ) {
+      // Reuse the same resolution pattern as the edit form
+      const modalityField = dynamicFields.fields.find(
+        (f) =>
+          f.name &&
+          f.name.toLowerCase().includes("modality") &&
+          !f.name.toLowerCase().includes("step")
+      );
+      const modalityStepsField = dynamicFields.fields.find(
+        (f) =>
+          f.name &&
+          f.name.toLowerCase().includes("modality") &&
+          f.name.toLowerCase().includes("step")
+      );
+
+      const modalityApiName = modalityField
+        ? modalityField.api_name
+        : "modality";
+      const modalityStepsApiName = modalityStepsField
+        ? modalityStepsField.api_name
+        : "modality_step";
+
+      modalityId =
+        (session && session[modalityApiName] != null
+          ? session[modalityApiName]
+          : null) ?? null;
+      modalityStepsId =
+        (session && session[modalityStepsApiName] != null
+          ? session[modalityStepsApiName]
+          : null) ?? null;
+
+      // Backwards‑compatibility: fall back to legacy top‑level fields
+      if (!modalityId && session && session.modality) {
+        modalityId = session.modality;
+      }
+      if (!modalityStepsId && session && session.modality_step) {
+        modalityStepsId = session.modality_step;
+      }
+
+      console.log("🔍 Modality api_name used for view:", modalityApiName);
+      console.log(
+        "🔍 Modality Steps api_name used for view:",
+        modalityStepsApiName
+      );
+    } else {
+      // No dynamicFields metadata – fall back to legacy keys
+      modalityId = session && session.modality ? session.modality : null;
+      modalityStepsId =
+        session && session.modality_step ? session.modality_step : null;
+    }
+  } catch (e) {
+    console.error("❌ Error resolving Modality api_names for view:", e);
+    modalityId = session && session.modality ? session.modality : null;
+    modalityStepsId =
+      session && session.modality_step ? session.modality_step : null;
+  }
+
+  console.log("🔍 Modality ID used for view:", modalityId);
+  console.log("🔍 Modality Steps ID used for view:", modalityStepsId);
 
   // Fetch modality and modality steps names
   try {
@@ -7965,27 +8194,192 @@ async function checkAndUpdateAIButtonState() {
 function updateAINotesContent(aiNotesData) {
   // Update Methods section
   const methodsElement = document.getElementById("ai-notes-methods-text");
-  if (methodsElement && aiNotesData.methods) {
-    methodsElement.textContent = aiNotesData.methods;
+  if (methodsElement && aiNotesData.methods !== undefined) {
+    methodsElement.textContent = aiNotesData.methods || "";
   }
 
   // Update Progress Towards Goal section
   const progressElement = document.getElementById(
     "ai-notes-progress-goal-text"
   );
-  if (progressElement && aiNotesData.progress_towards_goal) {
-    progressElement.textContent = aiNotesData.progress_towards_goal;
+  if (progressElement && aiNotesData.progress_towards_goal !== undefined) {
+    progressElement.textContent = aiNotesData.progress_towards_goal || "";
   }
 
   // Update Recommended Changes section
   const changesElement = document.getElementById(
     "ai-notes-recommended-changes-text"
   );
-  if (changesElement && aiNotesData.recommended_changes) {
-    changesElement.textContent = aiNotesData.recommended_changes;
+  if (changesElement && aiNotesData.recommended_changes !== undefined) {
+    changesElement.textContent = aiNotesData.recommended_changes || "";
   }
 
   console.log("✅ AI Notes content updated");
+}
+
+// Enable inline editing for AI Notes sections (Methods, Progress, Recommended Changes)
+function setupAINotesInlineEditing() {
+  console.log("🔧 Setting up AI Notes inline editing...");
+
+  /**
+   * Generic helper to attach an inline editor to a section.
+   * @param {string} textId - Element ID that displays the text.
+   * @param {string} fieldKey - API field name to update (e.g. "methods_response").
+   */
+  function attachEditor(textId, fieldKey) {
+    const textEl = document.getElementById(textId);
+    if (!textEl) return;
+
+    // Find the closest AI notes section container
+    const section = textEl.closest(".ai-notes-section");
+    if (!section) return;
+
+    // Avoid adding duplicate editors
+    if (section.querySelector(".ai-notes-edit-icon")) {
+      return;
+    }
+
+    // Create tiny pencil icon in the header area
+    const header = section.querySelector(".ai-notes-heading") || section;
+    const editIcon = document.createElement("span");
+    editIcon.className = "ai-notes-edit-icon";
+    editIcon.textContent = "✏️";
+    editIcon.title = "Edit";
+    editIcon.style.fontSize = "11px";
+    editIcon.style.cursor = "pointer";
+    editIcon.style.marginLeft = "8px";
+
+    header.appendChild(editIcon);
+
+    editIcon.addEventListener("click", async () => {
+      console.log("✏️ AI Notes edit icon clicked for field:", fieldKey);
+
+      // Prevent multiple editors
+      if (section.classList.contains("editing")) return;
+
+      section.classList.add("editing");
+
+      const originalText = textEl.textContent || "";
+
+      // Create edit container
+      const container = document.createElement("div");
+      container.className = "ai-notes-edit-container";
+      container.style.marginTop = "8px";
+
+      const textarea = document.createElement("textarea");
+      textarea.className = "ai-notes-edit-textarea";
+      textarea.value = originalText;
+      textarea.rows = 6;
+      textarea.style.width = "100%";
+
+      const actions = document.createElement("div");
+      actions.style.display = "flex";
+      actions.style.gap = "8px";
+      actions.style.marginTop = "4px";
+
+      const saveBtn = document.createElement("button");
+      saveBtn.textContent = "Save";
+      saveBtn.className = "btn-save-feedback";
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Cancel";
+      cancelBtn.className = "btn-cancel-feedback";
+
+      actions.appendChild(saveBtn);
+      actions.appendChild(cancelBtn);
+      container.appendChild(textarea);
+      container.appendChild(actions);
+
+      // Insert editor inside the section (separate from the text container
+      // so it remains visible while the original text container is hidden
+      // in editing mode).
+      section.appendChild(container);
+
+      cancelBtn.addEventListener("click", () => {
+        container.remove();
+        section.classList.remove("editing");
+      });
+
+      saveBtn.addEventListener("click", async () => {
+        const newValue = textarea.value || "";
+        saveBtn.disabled = true;
+        cancelBtn.disabled = true;
+        saveBtn.textContent = "Saving...";
+
+        try {
+          const tokenResult = await chrome.storage.local.get(["accessToken"]);
+          if (!tokenResult.accessToken) {
+            throw new Error("No access token, please log in again.");
+          }
+
+          const stored = await chrome.storage.local.get(["currentSession"]);
+          const currentSession = stored.currentSession;
+          const sessionId =
+            currentSession && (currentSession.id || currentSession.session_id);
+
+          if (!sessionId) {
+            throw new Error("No active session found to save changes.");
+          }
+
+          const body = {};
+          body[fieldKey] = newValue;
+
+          const response = await fetch(
+            `${API_BASE_URL}/sessions/${sessionId}`,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${tokenResult.accessToken}`,
+              },
+              body: JSON.stringify(body),
+            }
+          );
+
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          // Update UI and local session cache
+          textEl.textContent = newValue;
+
+          const updatedSession = {
+            ...(currentSession || {}),
+            [fieldKey]: newValue,
+          };
+          chrome.storage.local.set({ currentSession: updatedSession });
+
+          showSuccessMessage("AI note updated successfully.");
+          container.remove();
+          section.classList.remove("editing");
+        } catch (err) {
+          console.error("❌ Failed to save AI Notes edit:", err);
+          showErrorMessage("Failed to save changes. Please try again.");
+          saveBtn.disabled = false;
+          cancelBtn.disabled = false;
+          saveBtn.textContent = "Save";
+        }
+      });
+    });
+  }
+
+  attachEditor("ai-notes-methods-text", "methods_response");
+  attachEditor("ai-notes-progress-goal-text", "progress_towards_goal_response");
+  attachEditor(
+    "ai-notes-recommended-changes-text",
+    "recommended_changes_response"
+  );
+}
+
+// Reset AI Notes inline editing state: remove any open editors and restore view mode
+function resetAINotesInlineEditing() {
+  const sections = document.querySelectorAll(".ai-notes-section.editing");
+  sections.forEach((section) => {
+    section.classList.remove("editing");
+  });
+
+  const editors = document.querySelectorAll(".ai-notes-edit-container");
+  editors.forEach((editor) => editor.remove());
 }
 
 // Add Client Modal Functions
@@ -8108,6 +8502,13 @@ function hideAddSessionModal() {
   if (modal) {
     modal.style.display = "none";
   }
+  
+  // Reset button state to prevent "Creating..." from persisting
+  const saveBtn = document.getElementById("save-add-session");
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.textContent = "Create Session";
+  }
 }
 
 async function showAddSessionModal() {
@@ -8130,6 +8531,13 @@ async function showAddSessionModal() {
   }
 
   modal.style.display = "block";
+  
+  // Reset button state when opening modal
+  const saveBtn = document.getElementById("save-add-session");
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.textContent = "Create Session";
+  }
 
   // Load clients and EMR types
   await loadClientsForSessionModal();
@@ -8229,36 +8637,117 @@ async function loadEMRTypesForSessionModal() {
       throw new Error("No access token found");
     }
 
-    const response = await fetch(`${API_BASE_URL}/emr-types/`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${result.accessToken}`,
-        "Content-Type": "application/json",
-      },
-    });
+    // Fetch EMR types and profile in parallel so we can filter based on
+    // the EMR(s) selected in Company Info for this user.
+    const [emrTypesResponse, profileResponse] = await Promise.all([
+      fetch(`${API_BASE_URL}/emr-types/`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${result.accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }),
+      fetch(`${API_BASE_URL}/me`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${result.accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }),
+    ]);
 
-    if (response.status === 401) {
+    if (emrTypesResponse.status === 401 || profileResponse.status === 401) {
       handle401Error();
       return;
     }
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch EMR types: ${response.status}`);
+    if (!emrTypesResponse.ok) {
+      throw new Error(`Failed to fetch EMR types: ${emrTypesResponse.status}`);
     }
 
-    const emrTypes = await response.json();
-    console.log("📋 EMR types loaded for modal:", emrTypes);
+    if (!profileResponse.ok) {
+      throw new Error(`Failed to fetch profile: ${profileResponse.status}`);
+    }
 
-    // Clear existing options except the first one
+    const emrTypes = await emrTypesResponse.json();
+    const profileData = await profileResponse.json();
+    console.log("📋 EMR types loaded for modal:", emrTypes);
+    console.log("👤 Profile for EMR filter:", profileData);
+
+    // Read the EMR list from Company Info (array of EMR names)
+    let companyEmrNames = [];
+    if (
+      profileData &&
+      profileData.company &&
+      Array.isArray(profileData.company.emr)
+    ) {
+      companyEmrNames = profileData.company.emr
+        .map((name) => (name || "").toString().trim())
+        .filter((name) => name.length > 0);
+    }
+
+    // Filter EMR types to only those selected in Company Info.
+    // Match by name, case-insensitive.
+    let filteredEmrTypes = emrTypes;
+    if (companyEmrNames.length > 0) {
+      const normalizedCompanyEmr = companyEmrNames.map((n) =>
+        n.toLowerCase().trim()
+      );
+
+      filteredEmrTypes = emrTypes.filter((emrType) => {
+        const typeName = (emrType.name || "").toString().toLowerCase().trim();
+        return normalizedCompanyEmr.includes(typeName);
+      });
+
+      console.log(
+        "📋 Filtered EMR types based on Company Info EMR:",
+        filteredEmrTypes
+      );
+    } else {
+      console.log(
+        "⚠️ No EMR configured in Company Info; EMR type dropdown will be empty."
+      );
+      filteredEmrTypes = [];
+    }
+
+    // Clear existing options and add placeholder
     emrTypeSelect.innerHTML = '<option value="">Select EMR Type</option>';
 
-    // Add EMR types to dropdown
-    emrTypes.forEach((emrType) => {
+    // Add filtered EMR types to dropdown
+    filteredEmrTypes.forEach((emrType) => {
       const option = document.createElement("option");
       option.value = emrType.id;
       option.textContent = emrType.name || "Unknown Type";
       emrTypeSelect.appendChild(option);
     });
+
+    // If there is exactly one EMR configured for this company, pre-select it
+    // and load its dynamic fields by default. If more than one, leave
+    // placeholder selected so the user must choose.
+    if (filteredEmrTypes.length === 1) {
+      const onlyEmr = filteredEmrTypes[0];
+
+      // Make sure the corresponding <option> is marked as selected at the
+      // attribute level so that cloning the element later (to reset
+      // listeners) does NOT lose the selection.
+      const optionToSelect = emrTypeSelect.querySelector(
+        `option[value="${onlyEmr.id}"]`
+      );
+      if (optionToSelect) {
+        // Clear any existing "selected" attributes
+        Array.from(emrTypeSelect.options).forEach((opt) => {
+          opt.removeAttribute("selected");
+        });
+        optionToSelect.setAttribute("selected", "selected");
+      }
+
+      emrTypeSelect.value = onlyEmr.id;
+      console.log(
+        "✅ Single EMR from Company Info found; pre-selecting in New Session modal:",
+        onlyEmr
+      );
+      await loadAddSessionDynamicFields(onlyEmr.id);
+    }
   } catch (error) {
     console.error("❌ Error loading EMR types:", error);
     showErrorMessage("Failed to load EMR types");
@@ -9797,6 +10286,44 @@ async function saveNewClient() {
     // Refresh clients list
     loadClients();
 
+    // If we are currently on the client detail page for this client,
+    // immediately refresh the detail view so the user sees updated data
+    // without needing to navigate away.
+    if (isEdit) {
+      const currentPage = document.querySelector(
+        ".page-content[style*='display: block'], .page-content:not([style*='display: none'])"
+      );
+      if (currentPage && currentPage.id === "client-detail-page") {
+        const updatedClientId = result.id || result.client_id || editClientId;
+
+        chrome.storage.local.get(["currentClient"], (stored) => {
+          const storedClient = stored.currentClient;
+          const storedId =
+            storedClient &&
+            (storedClient.id ||
+              storedClient.client_id ||
+              storedClient.clientId);
+
+          if (String(storedId) === String(updatedClientId)) {
+            const clientData = {
+              ...storedClient,
+              ...result,
+              clientId: updatedClientId,
+            };
+
+            chrome.storage.local.set({ currentClient: clientData }, () => {
+              console.log(
+                "🔄 Refreshed currentClient after client update:",
+                clientData
+              );
+            });
+
+            updateClientDetailPage(clientData);
+          }
+        });
+      }
+    }
+
     // Show success message
     showSuccessMessage(
       isEdit ? "Client updated successfully!" : "Client added successfully!"
@@ -9982,8 +10509,15 @@ async function loadSessionDynamicFields(sessionData) {
       "fields"
     );
 
+    // Track fields we've already added to prevent duplicates (by api_name)
+    const addedFields = new Set();
+
     // Create form fields for each dynamic field (confirmed results)
     dynamicFields.confirmedResults.forEach((result) => {
+      console.log("\n🔍 ============ CONFIRMED RESULT ============");
+      console.log("🔍 result.key (label):", result.key);
+      console.log("🔍 result object:", result);
+      
       // Skip "client" or "client name" field as it's already shown as a static field at the top
       const keyLower = result.key ? result.key.toLowerCase().trim() : "";
       if (
@@ -10032,12 +10566,18 @@ async function loadSessionDynamicFields(sessionData) {
       // Get field name from mapping or EMR field
       const fieldMapping = dynamicFields.fieldMapping;
       let fieldName = fieldMapping[result.key];
+      
+      console.log("🔍 fieldMapping[result.key]:", fieldName);
+      console.log("🔍 emrField:", emrField);
 
       // If no field mapping found, try to get it from the EMR field
       if (!fieldName && emrField) {
         fieldName = emrField.api_name;
         console.log("🔍 Using EMR field api_name as fieldName:", fieldName);
       }
+      
+      console.log("🔍 Final fieldName (api_name):", fieldName);
+      console.log("🔍 Label to display:", result.key);
 
       let fieldType = emrField ? emrField.type : result.type;
 
@@ -10082,6 +10622,12 @@ async function loadSessionDynamicFields(sessionData) {
         "EMR field found:",
         emrField
       );
+      
+      // Skip if we've already added this field (check by api_name)
+      if (fieldName && addedFields.has(fieldName)) {
+        console.log(`⏭️ Skipping duplicate field with api_name: ${fieldName}`);
+        return;
+      }
 
       // Debug field type detection
       console.log("🔍 Field type detection debug:");
@@ -10266,6 +10812,9 @@ async function loadSessionDynamicFields(sessionData) {
         fieldContainer.appendChild(label);
         fieldContainer.appendChild(input);
         container.appendChild(fieldContainer);
+        
+        // Mark this field as added
+        addedFields.add(fieldName);
       } else {
         console.log("⚠️ No field mapping found for:", result.key);
         console.log("🔍 Available field mappings:", Object.keys(fieldMapping));
@@ -10553,9 +11102,13 @@ async function loadSessionDynamicFields(sessionData) {
       }
     });
     // Process manual fields - also use EMR field types for consistency
-    console.log("🔍 Processing manual fields:", dynamicFields.manualFields);
+    console.log("\n🔍 ============ MANUAL FIELDS ============");
+    console.log("🔍 Total manual fields:", dynamicFields.manualFields.length);
+    console.log("🔍 Manual fields:", dynamicFields.manualFields);
     dynamicFields.manualFields.forEach((manualField) => {
-      console.log("🔍 Processing manual field:", manualField);
+      console.log("\n🔍 ============ MANUAL FIELD ============");
+      console.log("🔍 manualField.name (label):", manualField.name);
+      console.log("🔍 manualField object:", manualField);
 
       // Find matching EMR field definition by name
       const emrField = dynamicFields.fields.find(
@@ -10575,6 +11128,15 @@ async function loadSessionDynamicFields(sessionData) {
 
       if (emrField) {
         console.log("🔍 Found EMR field for manual field:", emrField);
+        console.log("🔍 EMR field name (proper label):", emrField.name);
+        console.log("🔍 EMR field api_name:", emrField.api_name);
+        console.log("🔍 Label that will be displayed:", manualField.name);
+        
+        // Skip if we've already added this field (check by api_name)
+        if (addedFields.has(emrField.api_name)) {
+          console.log(`⏭️ Skipping duplicate manual field with api_name: ${emrField.api_name}`);
+          return;
+        }
 
         const fieldContainer = document.createElement("div");
         fieldContainer.className = "form-group";
@@ -10721,6 +11283,9 @@ async function loadSessionDynamicFields(sessionData) {
         fieldContainer.appendChild(label);
         fieldContainer.appendChild(input);
         container.appendChild(fieldContainer);
+        
+        // Mark this field as added
+        addedFields.add(emrField.api_name);
       } else {
         console.log(
           "🔍 No EMR field found for manual field:",
@@ -11062,9 +11627,23 @@ function updateClientDetailPage(client) {
   document.getElementById("client-avatar-text").textContent = initials;
 
   // Update client details with correct field names
-  // Use date_of_birth from API response; show "Not specified" if missing
-  document.getElementById("client-dob").textContent =
-    client.date_of_birth || "Not specified";
+  // Use date_of_birth from API response; format as MM-DD-YYYY for display.
+  const dobElement = document.getElementById("client-dob");
+  if (dobElement) {
+    const rawDob = client.date_of_birth;
+    if (!rawDob) {
+      dobElement.textContent = "Not specified";
+    } else {
+      // If in YYYY-MM-DD format, convert to MM-DD-YYYY; otherwise, show as-is.
+      const dobMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(rawDob);
+      if (dobMatch) {
+        const [, year, month, day] = dobMatch;
+        dobElement.textContent = `${month}-${day}-${year}`;
+      } else {
+        dobElement.textContent = rawDob;
+      }
+    }
+  }
   // Format phone number nicely
   const phoneNumber = client.phone || "Not specified";
   const formattedPhone =
@@ -11137,7 +11716,8 @@ async function captureFastHTML() {
 
   // Get form values
   const emrTypeInput = document.getElementById("emr-type");
-  const sessionTypeSelect = document.getElementById("session-type");
+  // Use the unique ID for the Session Type select in the EMR Request form
+  const sessionTypeSelect = document.getElementById("session-type-select");
   const documentationMethodSelect = document.getElementById(
     "documentation-method"
   );
@@ -11171,6 +11751,13 @@ async function captureFastHTML() {
     sessionType,
     documentationMethodId,
   });
+
+  // Inform the user that SessyNote is capturing the current screen to
+  // customize features for this EMR request.
+  showSuccessMessage(
+    "SessyNote is reading your screen so we can customize our features",
+    10000
+  );
 
   // Show loading state
   const button = document.getElementById("send-emr-request-btn");
@@ -11294,7 +11881,11 @@ async function sendEMRTypeToAPI(data) {
 
     // Clear form
     document.getElementById("emr-type").value = "";
-    document.getElementById("session-type").value = "";
+    // Reset the Session Type select in the EMR Request form
+    const sessionTypeSelect = document.getElementById("session-type-select");
+    if (sessionTypeSelect) {
+      sessionTypeSelect.value = "";
+    }
     document.getElementById("documentation-method").value = "";
   } catch (error) {
     console.error("❌ Error sending EMR type to API:", error);

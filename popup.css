@@ -2896,6 +2896,38 @@ select.editable-input:disabled,
   position: relative;
 }
 
+/* AI Notes inline edit mode */
+.ai-notes-edit-icon {
+  margin-left: 6px;
+  color: #6b7280;
+}
+
+.ai-notes-section.editing .ai-notes-text-container {
+  display: none;
+}
+
+.ai-notes-edit-container {
+  margin-top: 8px;
+}
+
+.ai-notes-edit-textarea {
+  width: 100%;
+  min-height: 220px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 14px;
+  line-height: 1.5;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.ai-notes-edit-container .btn-save-feedback,
+.ai-notes-edit-container .btn-cancel-feedback {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
 .ai-notes-copy-icon {
   font-size: 16px;
   color: #666;
@@ -3169,13 +3201,13 @@ select.editable-input:disabled,
 /* Session Details and Session Data Labels - Styled with white background */
 .session-details-label,
 .session-data-label {
-  background-color: white !important;
+  background-color: transparent !important;
   color: #333 !important;
   text-align: center !important;
   padding: 12px 20px !important;
   border-radius: 6px !important;
   margin: 0 auto 20px auto !important;
-  font-size: 18px !important;
+  font-size: 16px !important;
   font-weight: 600 !important;
   width: calc(100% - 8px) !important;
   max-width: 100% !important;
@@ -3183,7 +3215,7 @@ select.editable-input:disabled,
   white-space: nowrap !important;
   display: block !important;
   grid-column: 1 / -1 !important; /* Span full grid width */
-  border: 1px solid #e5e7eb !important; /* Add border to make background visible */
+  border: none !important;
 }
 
 /* Extra spacing for Session Data label to prevent collision with Instructions field */

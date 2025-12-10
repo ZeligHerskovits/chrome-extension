@@ -217,6 +217,33 @@ let lateContentObserver = null;
 let lateScrapeScheduled = false;
 let sessionAlreadyScraped = false;
 
+// Track the last clicked table row (used when a session popup is opened).
+// This lets us evaluate XPath for row-based fields (like Date of Session,
+// Time In/Out, Length, Service Type) specifically within the row that
+// triggered the popup, without hard-coding any column indices.
+let lastClickedSessionRow = null;
+
+// Capture clicks anywhere in the document so we remember which row
+// the user interacted with most recently. When the blue "view" icon
+// (or any element inside the row) is clicked to open a popup, this
+// will store that <tr> as the context node for row-level XPath queries.
+document.addEventListener(
+  "click",
+  (event) => {
+    const target = event.target;
+    if (!target) return;
+
+    const row = target.closest("tr");
+    if (!row) return;
+
+    lastClickedSessionRow = row;
+    console.log(
+      "SessyNote: Stored last clicked session row for potential row-based scraping."
+    );
+  },
+  true
+);
+
 // Helper to stop late-content monitoring once we successfully scrape
 function stopLateContentObserver() {
   if (lateContentObserver) {
@@ -458,6 +485,80 @@ async function checkAndScrapeIfMatch() {
   urlObserver.observe(document.body, { childList: true, subtree: true });
 })();
 
+// Helper to evaluate an XPath for a field, using different context rules for
+// row-relative vs. popup/global XPaths.
+// - If xpath starts with ".//"  → treat as row‑relative and use the clicked <tr>.
+// - If xpath starts with "//"   → treat as popup/document‑scoped and use
+//   popup_root_selector (for popup EMRs) or the full document.
+function evaluateFieldXPath(xpath, defaultRoot) {
+  // Determine popup_root_selector from the active EMR config (if any)
+  const popupRootSelector =
+    activeEmrConfig && activeEmrConfig.isPopup
+      ? activeEmrConfig.popupRootSelector || null
+      : null;
+
+  let context = null;
+
+  try {
+    if (xpath.startsWith(".//")) {
+      // Row/grid field → use the last clicked <tr> as context when available
+      context = lastClickedSessionRow || defaultRoot || document;
+      if (!lastClickedSessionRow) {
+        console.warn(
+          "⚠️ SessyNote: Row-relative XPath used but no lastClickedSessionRow is set. Falling back to default root."
+        );
+      } else {
+        console.log(
+          "🔍 SessyNote: Using last clicked session row as XPath context for row-relative field."
+        );
+      }
+    } else {
+      // Popup or full-document field → use popup root if configured/found, else default root/document
+      let popupRoot = null;
+      if (popupRootSelector) {
+        try {
+          popupRoot = document.querySelector(popupRootSelector);
+        } catch (e) {
+          console.error(
+            "❌ SessyNote: Error querying popup_root_selector for XPath context:",
+            e
+          );
+        }
+      }
+
+      if (popupRoot) {
+        console.log(
+          "🔍 SessyNote: Using popup_root_selector as XPath context:",
+          popupRootSelector
+        );
+        context = popupRoot;
+      } else {
+        context = defaultRoot || document;
+      }
+    }
+
+    const result = document.evaluate(
+      xpath,
+      context || document,
+      null,
+      XPathResult.FIRST_ORDERED_NODE_TYPE,
+      null
+    );
+
+    const node = result.singleNodeValue;
+    if (!node) {
+      return { node: null, value: "" };
+    }
+
+    // Accept both elements and text nodes; textContent works for both.
+    const value = (node.textContent || "").trim();
+    return { node, value };
+  } catch (e) {
+    console.error("❌ SessyNote: XPath evaluation error:", e);
+    return { node: null, value: "" };
+  }
+}
+
 function scrapePageData(responseFields, root = document) {
   const scrapedData = {};
   console.log(
@@ -484,28 +585,19 @@ function scrapePageData(responseFields, root = document) {
           `🔍 SessyNote: Using XPath for ${fieldName}:`,
           source.xpath
         );
-        try {
-          const result = document.evaluate(
-            source.xpath,
-            root,
-            null,
-            XPathResult.FIRST_ORDERED_NODE_TYPE,
-            null
-          );
-          element = result.singleNodeValue;
 
-          if (element) {
-            value = element.textContent.trim();
-            console.log(`✅ SessyNote: Found ${fieldName} via XPath:`, value);
-          } else {
-            console.warn(
-              `❌ SessyNote: XPath returned no element for ${fieldName}`
-            );
-          }
-        } catch (xpathError) {
-          console.error(
-            `❌ SessyNote: XPath error for ${fieldName}:`,
-            xpathError
+        const { node, value: xpathValue } = evaluateFieldXPath(
+          source.xpath,
+          root
+        );
+
+        if (node && xpathValue) {
+          element = node;
+          value = xpathValue;
+          console.log(`✅ SessyNote: Found ${fieldName} via XPath:`, value);
+        } else {
+          console.warn(
+            `❌ SessyNote: XPath returned no value for ${fieldName}`
           );
         }
       }
