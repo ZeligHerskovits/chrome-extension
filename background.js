@@ -53,6 +53,92 @@ chrome.action.onClicked.addListener(async (tab) => {
   console.log("======================================");
 });
 
+// ===============================
+// AUTO-LOGOUT ON INACTIVITY
+// ===============================
+const INACTIVITY_TIMEOUT = 15 * 60 * 1000; // 15 minutes in milliseconds
+let inactivityTimer = null;
+
+// Function to perform logout
+function performAutoLogout() {
+  console.log("⏰ Background: Auto-logout triggered due to inactivity");
+  
+  // Clear all auth data
+  chrome.storage.local.remove(
+    [
+      "isLoggedIn",
+      "userEmail",
+      "accessToken",
+      "pendingLogin",
+      "emrUrl",
+      "emrTypeId",
+      "emrResponse",
+      "pendingSessionData",
+      "sessionDataTimestamp",
+    ],
+    function () {
+      console.log("✅ Background: User auto-logged out due to inactivity");
+    }
+  );
+}
+
+// Function to reset the inactivity timer
+function resetInactivityTimer() {
+  // Check if user is logged in
+  chrome.storage.local.get(["isLoggedIn"], function (result) {
+    if (!result.isLoggedIn) {
+      // Don't set timer if not logged in
+      if (inactivityTimer) {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+      }
+      return;
+    }
+
+    // Clear existing timer
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer);
+    }
+
+    // Set new timer
+    inactivityTimer = setTimeout(performAutoLogout, INACTIVITY_TIMEOUT);
+    
+    console.log("🔄 Background: Inactivity timer reset (15 minutes)");
+  });
+}
+
+// Listen for storage changes to detect login/logout
+chrome.storage.onChanged.addListener((changes, namespace) => {
+  if (namespace === "local" && changes.isLoggedIn) {
+    if (changes.isLoggedIn.newValue === true) {
+      // User logged in, start timer
+      console.log("✅ Background: User logged in, starting inactivity timer");
+      resetInactivityTimer();
+    } else if (changes.isLoggedIn.newValue === false) {
+      // User logged out, clear timer
+      console.log("🚫 Background: User logged out, clearing inactivity timer");
+      if (inactivityTimer) {
+        clearTimeout(inactivityTimer);
+        inactivityTimer = null;
+      }
+    }
+  }
+  
+  // Reset timer on any activity indicator
+  if (namespace === "local" && changes.lastActivityTime) {
+    resetInactivityTimer();
+  }
+});
+
+// Initialize timer on startup if user is already logged in
+chrome.storage.local.get(["isLoggedIn"], function (result) {
+  if (result.isLoggedIn) {
+    console.log("✅ Background: User already logged in on startup, starting inactivity timer");
+    resetInactivityTimer();
+  }
+});
+
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle page capture for download
   if (message.action === "captureAndDownload") {

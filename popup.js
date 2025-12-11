@@ -13,6 +13,9 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Setup main app functionality
   setupMainAppHandlers();
+
+  // Setup inactivity timeout
+  setupInactivityTimeout();
 });
 
 function checkLoginStatus() {
@@ -625,6 +628,88 @@ function setupMainAppHandlers() {
   setupForgotPasswordHandler();
 }
 
+// ===============================
+// AUTO-LOGOUT ON INACTIVITY
+// ===============================
+function setupInactivityTimeout() {
+  const INACTIVITY_TIMEOUT = 15 * 60 * 1000; // 15 minutes in milliseconds
+  let inactivityTimer = null;
+
+  // Function to perform logout
+  function performAutoLogout() {
+    console.log("⏰ Auto-logout triggered due to inactivity");
+    
+    // Clear all auth data (same as manual logout)
+    chrome.storage.local.remove(
+      [
+        "isLoggedIn",
+        "userEmail",
+        "accessToken",
+        "pendingLogin",
+        "emrUrl",
+        "emrTypeId",
+        "emrResponse",
+        "pendingSessionData",
+        "sessionDataTimestamp",
+      ],
+      function () {
+        console.log("✅ User auto-logged out due to inactivity");
+        showLoginPage();
+        
+        // Show informative message
+        showErrorMessage("You have been logged out due to inactivity.");
+      }
+    );
+  }
+
+  // Function to reset the inactivity timer
+  function resetInactivityTimer() {
+    // Only reset if user is logged in
+    chrome.storage.local.get(["isLoggedIn"], function (result) {
+      if (!result.isLoggedIn) {
+        // Don't set timer if not logged in
+        if (inactivityTimer) {
+          clearTimeout(inactivityTimer);
+          inactivityTimer = null;
+        }
+        return;
+      }
+
+      // Clear existing timer
+      if (inactivityTimer) {
+        clearTimeout(inactivityTimer);
+      }
+
+      // Set new timer
+      inactivityTimer = setTimeout(performAutoLogout, INACTIVITY_TIMEOUT);
+      
+      // Store last activity timestamp (for debugging/monitoring)
+      chrome.storage.local.set({ lastActivityTime: Date.now() });
+    });
+  }
+
+  // Activity event listeners
+  const activityEvents = [
+    "mousedown",
+    "mousemove",
+    "keypress",
+    "scroll",
+    "touchstart",
+    "click",
+  ];
+
+  // Add event listeners for user activity
+  activityEvents.forEach((eventName) => {
+    document.addEventListener(eventName, resetInactivityTimer, true);
+  });
+
+  // Initial timer setup
+  resetInactivityTimer();
+
+  console.log("✅ Inactivity timeout configured (15 minutes)");
+}
+
+
 function setupEmrTypesPageHandlers() {
   const checkBtn = document.getElementById("check-emr-types-btn");
   const selectEl = document.getElementById("existing-emr-type-select");
@@ -893,7 +978,7 @@ async function handleCheckExistingEmrTypes() {
         // Only re-enable the button if it is still visible
         if (checkBtn && checkBtn.style.display !== "none") {
           checkBtn.disabled = false;
-          checkBtn.textContent = "EMR type exist ?";
+          checkBtn.textContent = "Scan my page";
         }
       }
     });
@@ -906,7 +991,7 @@ async function handleCheckExistingEmrTypes() {
     }
     if (checkBtn && checkBtn.style.display !== "none") {
       checkBtn.disabled = false;
-      checkBtn.textContent = "EMR type exist ?";
+      checkBtn.textContent = "Scan my page";
     }
   }
 }
@@ -2741,7 +2826,7 @@ function navigateToPage(page) {
     loadSessionAINotes();
   } else if (page === "emr-types") {
     // Reset EMR Types UI every time you open it, so the
-    // "EMR type exist ?" button always shows again.
+    // "Scan my page" button always shows again.
     resetEmrTypesPageUI();
     loadDocumentationMethods();
     checkPendingEMRRequests();
@@ -2785,16 +2870,16 @@ function resetEmrTypesPageUI() {
     "new-emr-type-form-container"
   );
 
-  // Always show the "EMR type exist ?" section when entering the page
+  // Always show the "Scan my page" section when entering the page
   if (existSection) {
     existSection.style.display = "block";
   }
 
-  // Show and reset the "EMR type exist ?" button when entering the page
+  // Show and reset the "Scan my page" button when entering the page
   if (checkBtn) {
     checkBtn.style.display = "block";
     checkBtn.disabled = false;
-    checkBtn.textContent = "EMR type exist ?";
+    checkBtn.textContent = "Scan my page";
   }
 
   // Hide existing-EMR dropdown + button until user clicks the check button
@@ -8015,6 +8100,9 @@ async function generateAINotes() {
     // Show loading state for both buttons (with spinner)
     setGenerateButtonsLoading("Generating...");
 
+    // Show loading message with spinner in the content areas while generating
+    updateAINotesContentWithSpinner();
+
     // Make API call
     const response = await fetch(
       `${API_BASE_URL}/sessions/${sessionId}/generate`,
@@ -8133,11 +8221,11 @@ async function loadSessionAINotes() {
     } else {
       console.log("📋 No existing AI Notes found, showing default content");
 
-      // Show default loading content
+      // Show helpful message when no AI notes exist yet
       updateAINotesContent({
-        methods: "Loading methods response...",
-        progress_towards_goal: "Loading progress towards goal response...",
-        recommended_changes: "Loading recommended changes response...",
+        methods: "No AI notes generated yet. Click 'Generate AI Notes' below to create them.",
+        progress_towards_goal: "No AI notes generated yet. Click 'Generate AI Notes' below to create them.",
+        recommended_changes: "No AI notes generated yet. Click 'Generate AI Notes' below to create them.",
       });
 
       // Update button to show "Generate AI Notes"
@@ -8195,7 +8283,7 @@ function updateAINotesContent(aiNotesData) {
   // Update Methods section
   const methodsElement = document.getElementById("ai-notes-methods-text");
   if (methodsElement && aiNotesData.methods !== undefined) {
-    methodsElement.textContent = aiNotesData.methods || "";
+    methodsElement.textContent = aiNotesData.methods || "(No content generated)";
   }
 
   // Update Progress Towards Goal section
@@ -8203,7 +8291,7 @@ function updateAINotesContent(aiNotesData) {
     "ai-notes-progress-goal-text"
   );
   if (progressElement && aiNotesData.progress_towards_goal !== undefined) {
-    progressElement.textContent = aiNotesData.progress_towards_goal || "";
+    progressElement.textContent = aiNotesData.progress_towards_goal || "(No content generated)";
   }
 
   // Update Recommended Changes section
@@ -8211,10 +8299,36 @@ function updateAINotesContent(aiNotesData) {
     "ai-notes-recommended-changes-text"
   );
   if (changesElement && aiNotesData.recommended_changes !== undefined) {
-    changesElement.textContent = aiNotesData.recommended_changes || "";
+    changesElement.textContent = aiNotesData.recommended_changes || "(No content generated)";
   }
 
   console.log("✅ AI Notes content updated");
+}
+
+// Update AI Notes content with loading spinners
+function updateAINotesContentWithSpinner() {
+  // Create spinner HTML
+  const spinnerHTML = '<span class="ai-notes-inline-spinner"></span> Generating...';
+
+  // Update Methods section
+  const methodsElement = document.getElementById("ai-notes-methods-text");
+  if (methodsElement) {
+    methodsElement.innerHTML = spinnerHTML;
+  }
+
+  // Update Progress Towards Goal section
+  const progressElement = document.getElementById("ai-notes-progress-goal-text");
+  if (progressElement) {
+    progressElement.innerHTML = spinnerHTML;
+  }
+
+  // Update Recommended Changes section
+  const changesElement = document.getElementById("ai-notes-recommended-changes-text");
+  if (changesElement) {
+    changesElement.innerHTML = spinnerHTML;
+  }
+
+  console.log("✅ AI Notes content updated with spinners");
 }
 
 // Enable inline editing for AI Notes sections (Methods, Progress, Recommended Changes)

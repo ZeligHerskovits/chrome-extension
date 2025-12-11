@@ -148,22 +148,26 @@
             <h2>New EMR Type</h2>
           </div>
 
-          <!-- Pending EMR Request Message -->
-          <div class="pending-emr-request-message" id="pending-emr-request-message" style="display: none;">
-            <div class="pending-message-content">
-              <span class="pending-icon">⏳</span>
-              <span class="pending-text">You have a pending EMR request that is being reviewed.</span>
-            </div>
-          </div>
-
           <!-- Step 1: Check if EMR type exists for current site -->
           <div class="form-container" id="emr-types-exist-section">
+            <!-- Welcome Instructions -->
+            <div class="welcome-instructions" style="margin-bottom: 20px; padding: 16px; background-color: #f8f9fa; border-radius: 8px; border-left: 4px solid #298997;">
+              <h3 style="margin: 0 0 12px 0; font-size: 18px; font-weight: 600; color: #333;">Welcome to SessyNote!</h3>
+              <p style="margin: 0 0 12px 0; font-size: 14px; color: #666; line-height: 1.5;">We'll guide you step by step to get you going.</p>
+              <ol style="margin: 0; padding-left: 20px; font-size: 14px; color: #666; line-height: 1.8;">
+                <li>Log in to the software where you enter your sessions.</li>
+                <li>Go to the page where you enter your session details.</li>
+                <li>Leave the session page open and click "Scan my page."</li>
+              </ol>
+              <p style="margin: 12px 0 0 0; font-size: 13px; color: #666; font-style: italic;">The system will scan your page to customize your setup.</p>
+            </div>
+
             <div class="input-group">
-              <button class="send-button" id="check-emr-types-btn">EMR type exist ?</button>
+              <button class="send-button" id="check-emr-types-btn">Scan my page</button>
             </div>
 
             <div class="input-group" id="existing-emr-select-group" style="display: none;">
-              <label class="input-label">Existing EMR Types for this site</label>
+              <label class="input-label">Choose EMR or Create a new one</label>
               <div class="input-wrapper">
                 <select class="form-input" id="existing-emr-type-select">
                   <option value="">Select EMR Type</option>
@@ -174,11 +178,19 @@
 
             <div class="input-group" id="existing-emr-actions-group" style="display: none;">
               <button class="send-button" id="existing-emr-found-btn" disabled>
-                Found
+                Select EMR Type
               </button>
               <button class="send-button" id="existing-emr-not-found-btn">
-                Not found
+                Create New
               </button>
+            </div>
+
+            <!-- Pending EMR Request Message -->
+            <div class="pending-emr-request-message" id="pending-emr-request-message" style="display: none;">
+              <div class="pending-message-content">
+                <span class="pending-icon">⏳</span>
+                <span class="pending-text">You have a pending EMR request under review.</span>
+              </div>
             </div>
           </div>
 
@@ -745,13 +757,7 @@
             <span class="detected-text">Session Detected</span>
           </div>
 
-          <!-- Session Tabs -->
-          <div class="session-tabs-container" style="margin-top: 16px;">
-            <div class="session-tabs">
-              <div class="tab-button active" id="auto-session-info-tab">Session Info</div>
-              <div class="tab-button" id="auto-activity-tab">Activity</div>
-            </div>
-          </div>
+
 
           <!-- Session Info Tab Content -->
           <div class="tab-content active" id="auto-session-info-content">
@@ -775,12 +781,7 @@
             </div>
           </div>
 
-          <!-- Activity Tab Content -->
-          <div class="tab-content" id="auto-activity-content" style="display: none">
-            <div style="padding: 20px; text-align: center; color: #666;">
-              <p>Activity content coming soon...</p>
-            </div>
-          </div>
+
 
           <!-- Action Buttons -->
           <div class="session-action-buttons">
