@@ -3,12 +3,11 @@
 
 // API Base URL
 const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
-
+//const API_BASE_URL =  "http://localhost:8001/api/v1"
 // Track side panel state per window
 const sidePanelState = new Map();
 let clickCount = 0;
 let lastClickTime = 0;
-
 // Handle extension icon click to toggle side panel
 chrome.action.onClicked.addListener(async (tab) => {
   clickCount++;
@@ -34,7 +33,7 @@ chrome.action.onClicked.addListener(async (tab) => {
     await chrome.sidePanel.open({ windowId: tab.windowId });
     
     const duration = Date.now() - startTime;
-    console.log(`SessyNote: ✅ Side panel opened successfully in ${duration}ms`);
+    console.log(`SessyNote: âœ… Side panel opened successfully in ${duration}ms`);
     sidePanelState.set(tab.windowId, true);
   } catch (error) {
     console.error("SessyNote: ❌ Error opening side panel:", error);
@@ -371,28 +370,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (tabs[0]) {
         const windowId = tabs[0].windowId;
 
-        // Store the data regardless
-        chrome.storage.local.set({
-          pendingSessionData: message.data,
-          sessionDataTimestamp: Date.now(),
+            // Store the data regardless
+            chrome.storage.local.set({
+            pendingSessionData: message.data,
+            sessionDataTimestamp: Date.now(),
         });
 
-        // Try to send message to popup - if it responds, panel is open
-        chrome.runtime.sendMessage(
-          { action: "fillSessionData", data: message.data },
-          (response) => {
-            if (chrome.runtime.lastError || !response) {
+            // Try to send message to popup - if it responds, panel is open
+            chrome.runtime.sendMessage(
+              { action: "fillSessionData", data: message.data },
+              (response) => {
+                if (chrome.runtime.lastError || !response) {  
               // No response = panel is closed
               console.log(
                 "SessyNote: Panel is closed (no response), making button blink"
-              );
-              chrome.tabs.sendMessage(tabs[0].id, {
-                action: "startBlinking",
-              });
-            } else {
-              // Got response = panel is open
-              console.log("SessyNote: Panel is open, auto-filled immediately");
-            }
+              );                 
+                    chrome.tabs.sendMessage(tabs[0].id, {
+                      action: "startBlinking",
+                    });
+                } else {
+                  // Got response = panel is open
+                  console.log("SessyNote: Panel is open, auto-filled immediately");                
+                }           
           }
         );
       }

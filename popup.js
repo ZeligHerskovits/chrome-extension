@@ -75,8 +75,8 @@ function showLoginPage() {
 }
 
 // API Configuration - Your actual server URL
-const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
-
+//const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
+const API_BASE_URL =  "http://localhost:8001/api/v1"
 // Handle 401 Unauthorized errors (token expired)
 function handle401Error() {
   console.log("⚠️ Token expired or invalid - logging out user");
@@ -168,18 +168,59 @@ async function getSessionDetailFields(emrTypeId) {
     // hammering the API while still reflecting backend changes quickly.
     const CACHE_TTL_MS = 5 * 1000; // 5 seconds
 
+    // Stale-while-revalidate: if we have cached data, return it immediately
+    // to render the UI fast, but refresh the cache in background if it's stale.
     if (
       cachedEntry &&
       cachedEntry.confirmedResults &&
       cachedEntry.fields &&
       cachedEntry.manualFields &&
-      typeof cachedEntry.__fetchedAt === "number" &&
-      Date.now() - cachedEntry.__fetchedAt < CACHE_TTL_MS
+      typeof cachedEntry.__fetchedAt === "number"
     ) {
-      console.log("📋 Using cached session fields (fresh):", cachedEntry);
-      // Strip internal metadata before returning, to keep shape identical
       const { __fetchedAt, ...sessionFields } = cachedEntry;
-      return sessionFields;
+      const age = Date.now() - __fetchedAt;
+      if (age < CACHE_TTL_MS) {
+        console.log("📋 Using cached session fields (fresh):", cachedEntry);
+        return sessionFields;
+      } else {
+        console.log("📋 Using cached session fields (stale) and refreshing in background:", cachedEntry);
+        // Background refresh - don't block UI
+        (async () => {
+          try {
+            const [resultsResponse, fieldsResponse, manualFieldsResponse] = await Promise.all([
+              fetch(`${API_BASE_URL}/emr-types/${emrTypeId}/results`, { method: "GET", headers }),
+              fetch(`${API_BASE_URL}/emr-types-fields/`, { method: "GET", headers }),
+              fetch(`${API_BASE_URL}/manual-fields/emr-type/${emrTypeId}`, { method: "GET", headers }),
+            ]);
+
+            if (resultsResponse.ok && fieldsResponse.ok && manualFieldsResponse.ok) {
+              const [results, fields, manualFields] = await Promise.all([
+                resultsResponse.json(),
+                fieldsResponse.json(),
+                manualFieldsResponse.json(),
+              ]);
+
+              const confirmedResults = results.filter((result) => result.status === "confirmed");
+              const fieldMapping = {};
+              fields.forEach((field) => {
+                fieldMapping[field.name] = { type: field.type, source: "emr-type" };
+              });
+              manualFields.forEach((field) => {
+                fieldMapping[field.name] = { type: field.type, source: "manual" };
+              });
+
+              const freshSessionFields = { confirmedResults, fieldMapping, fields, manualFields };
+              await chrome.storage.local.set({ [cacheKey]: { ...freshSessionFields, __fetchedAt: Date.now() } });
+              console.log("🔄 Background refresh of session fields complete for EMR type", emrTypeId);
+            } else {
+              console.warn("⚠️ Background refresh: one or more responses not ok");
+            }
+          } catch (err) {
+            console.error("❌ Background refresh failed:", err);
+          }
+        })();
+        return sessionFields;
+      }
     }
 
     // Get access token
@@ -1840,12 +1881,15 @@ function saveAutoDetectedSession() {
             `💾 Updated manual field ${apiName} = ${scrapedData[apiName]}`
           );
         } else {
-          // For Modality and Modality Steps, use field name as key
-          // These are UUID strings in DB, save as string or null
+          // For lookup fields, use field name as key (UUID strings in DB)
           if (fieldName === "Modality") {
             scrapedData.modality = input.value || null;
           } else if (fieldName === "Modality Steps") {
             scrapedData.modality_step = input.value || null;
+          } else if (fieldName === "Activity") {
+            scrapedData.activity = input.value || null;
+          } else if (fieldName === "Sub-Activities") {
+            scrapedData.sub_activity = input.value || null;
           }
         }
       }
@@ -4323,13 +4367,13 @@ async function renderDynamicFields(dynamicFields) {
   }
   console.log("✅ Session details container found:", sessionDetailsContainer);
 
-  // Remove any existing dynamic fields section to prevent duplicates
-  const existingDynamicSection = sessionDetailsContainer.querySelector(
+  // Remove all existing dynamic fields sections to prevent duplicates
+  const existingDynamicSections = sessionDetailsContainer.querySelectorAll(
     ".dynamic-fields-section"
   );
-  if (existingDynamicSection) {
-    console.log("🗑️ Removing existing dynamic fields section");
-    existingDynamicSection.remove();
+  if (existingDynamicSections.length > 0) {
+    console.log(`🗑️ Removing ${existingDynamicSections.length} existing dynamic fields sections`);
+    existingDynamicSections.forEach(section => section.remove());
   }
 
   // Get current session data to check which fields exist
@@ -4439,11 +4483,23 @@ async function renderDynamicFields(dynamicFields) {
     dynamicFieldsSection.appendChild(dividerLine);
   }
 
-  // Add Modality and Modality Steps fields (right after confirmed results, before manual fields)
-  await addModalityFieldsToView(session, dynamicFields, dynamicFieldsSection);
+  // Add Modality and Modality Steps only if chosen in EMR type manual fields
+  if (manualFieldsContain(dynamicFields.manualFields, ["modality", "modalities", "modality steps"])) {
+    await addModalityFieldsToView(session, dynamicFields, dynamicFieldsSection);
+  }
+
+  // Add Activity and Sub-Activities only if chosen in EMR type manual fields (type: lookup)
+  if (manualFieldsContainActivityLookup(dynamicFields.manualFields, dynamicFields)) {
+    await addActivityFieldsToView(session, dynamicFields, dynamicFieldsSection);
+  }
 
   // Process manual fields - match with emr-types-fields using api_name
   dynamicFields.manualFields.forEach((field) => {
+    // Skip lookup fields we handle separately (Modality, Modality Steps, Activity, Sub-Activities)
+    if (isLookupFieldHandledSeparately(field.name)) {
+      console.log(`⏭️ Skipping lookup field handled separately: ${field.name}`);
+      return;
+    }
     console.log(`🔍 Processing manual field:`, field);
     console.log(`🔍 Looking for field with api_name: ${field.name}`);
 
@@ -4650,6 +4706,97 @@ async function addModalityFieldsToView(session, dynamicFields, container) {
   } catch (error) {
     console.error("❌ Error fetching modality data:", error);
   }
+}
+
+// Helper: is this manual field a lookup we handle separately (Modality, Modality Steps, Activity, Sub-Activities)
+function isLookupFieldHandledSeparately(fieldName) {
+  const n = (fieldName || "")
+    .toLowerCase()
+    .replace(/-/g, " ")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const lookupNames = [
+    "modality",
+    "modalities",
+    "modality steps",
+    "activity",
+    "activities",
+    "sub-activity",
+    "sub-activities",
+    "sub activity",
+    "sub activities",
+  ];
+  return lookupNames.some(
+    (v) => n === v || n.includes(v) || v.includes(n)
+  );
+}
+
+// Function to add Activity and Sub-Activities fields to session view
+async function addActivityFieldsToView(session, dynamicFields, container) {
+  let activityId = null;
+  let subActivityId = null;
+  const activityApiName = "activity";
+  const subActivityApiName = "sub_activity";
+
+  try {
+    activityId =
+      (session && session[activityApiName] != null ? session[activityApiName] : null) ?? null;
+    subActivityId =
+      (session && session[subActivityApiName] != null ? session[subActivityApiName] : null) ?? null;
+  } catch (e) {
+    activityId = session?.activity ?? null;
+    subActivityId = session?.sub_activity ?? null;
+  }
+
+  // Render placeholders immediately, then resolve readable names asynchronously
+  const activityElement = createDynamicFieldElement("Activity", "Loading...", "text");
+  container.appendChild(activityElement);
+  const subActivityElement = createDynamicFieldElement("Sub-Activities", "Loading...", "text");
+  container.appendChild(subActivityElement);
+
+  (async () => {
+    try {
+      const activities = await fetchActivitiesCached();
+      const subActivities = await fetchSubActivitiesCached();
+
+      if (activityId) {
+        const activity = activities.find((a) => a.id === activityId || a.id == activityId);
+        const activityValEl = activityElement.querySelector('.detail-value');
+        if (activity && activityValEl) {
+          activityValEl.textContent = activity.name;
+          checkAndSetTruncationTooltip(activityValEl, activity.name);
+        } else if (activityValEl) {
+          activityValEl.textContent = 'Not specified';
+        }
+      } else {
+        const activityValEl = activityElement.querySelector('.detail-value');
+        if (activityValEl) activityValEl.textContent = 'Not specified';
+      }
+
+      if (subActivityId) {
+        const sub = subActivities.find((s) => s.id === subActivityId || s.id == subActivityId);
+        const subValEl = subActivityElement.querySelector('.detail-value');
+        if (sub && subValEl) {
+          subValEl.textContent = sub.name;
+          checkAndSetTruncationTooltip(subValEl, sub.name);
+        } else if (subValEl) {
+          subValEl.textContent = 'Not specified';
+        }
+      } else {
+        const subValEl = subActivityElement.querySelector('.detail-value');
+        if (subValEl) subValEl.textContent = 'Not specified';
+      }
+
+      console.log("✅ Added Activity and Sub-Activities fields (populated)");
+    } catch (error) {
+      console.error("❌ Error fetching activity data:", error);
+      const activityValEl = activityElement.querySelector('.detail-value');
+      const subValEl = subActivityElement.querySelector('.detail-value');
+      if (activityValEl) activityValEl.textContent = 'Not specified';
+      if (subValEl) subValEl.textContent = 'Not specified';
+    }
+  })();
 }
 
 // Function to create a dynamic field element for the manual session view page
@@ -8901,6 +9048,36 @@ async function fetchModalities() {
   }
 }
 
+// Helper: check if manualFields contains a field matching any of the name variants (normalized)
+function manualFieldsContain(manualFields, nameVariants) {
+  if (!manualFields || !Array.isArray(manualFields)) return false;
+  const normalized = (s) =>
+    (s || "")
+      .toLowerCase()
+      .replace(/-/g, " ")
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const variants = nameVariants.map(normalized);
+  return manualFields.some((mf) => {
+    const n = normalized(mf.name);
+    return variants.some((v) => n === v || n.includes(v) || v.includes(n));
+  });
+}
+
+// Helper: check if manualFields contains Activity/Sub-Activities (type lookup when available)
+function manualFieldsContainActivityLookup(manualFields, dynamicFields) {
+  if (!manualFields || !Array.isArray(manualFields)) return false;
+  return manualFieldsContain(manualFields, [
+    "activity",
+    "activities",
+    "sub-activity",
+    "sub-activities",
+    "sub activity",
+    "sub activities",
+  ]);
+}
+
 // Fetch all modality steps
 async function fetchModalitySteps() {
   try {
@@ -8934,6 +9111,134 @@ async function fetchModalitySteps() {
     return [];
   }
 }
+
+// Fetch all activities
+async function fetchActivities() {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found");
+    }
+    const response = await fetch(`${API_BASE_URL}/activities/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+    if (!response.ok) {
+      throw new Error(`Failed to fetch activities: ${response.status}`);
+    }
+    const activities = await response.json();
+    console.log("📋 Activities loaded:", activities);
+    return activities;
+  } catch (error) {
+    console.error("❌ Error loading activities:", error);
+    return [];
+  }
+}
+
+// Fetch all sub-activities (filter by activity_id when displaying)
+async function fetchSubActivities() {
+  try {
+    const result = await chrome.storage.local.get(["accessToken"]);
+    if (!result.accessToken) {
+      throw new Error("No access token found");
+    }
+    const response = await fetch(`${API_BASE_URL}/sub-activities/`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${result.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+    if (!response.ok) {
+      throw new Error(`Failed to fetch sub-activities: ${response.status}`);
+    }
+    const subActivities = await response.json();
+    console.log("📋 Sub-activities loaded:", subActivities);
+    return subActivities;
+  } catch (error) {
+    console.error("❌ Error loading sub-activities:", error);
+    return [];
+  }
+}
+
+// Cache-aware wrapper for activities/sub-activities to improve UI responsiveness
+const ACTIVITY_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+async function fetchActivitiesCached() {
+  const key = "cache_activities";
+  try {
+    const stored = await chrome.storage.local.get([key]);
+    if (stored[key] && Array.isArray(stored[key].data)) {
+      const age = Date.now() - stored[key].__fetchedAt;
+      if (age < ACTIVITY_CACHE_TTL_MS) {
+        console.log("📋 Using cached activities");
+        return stored[key].data;
+      } else {
+        console.log("📋 Returning stale activities and refreshing in background");
+        (async () => {
+          try {
+            const fresh = await fetchActivities();
+            await chrome.storage.local.set({ [key]: { data: fresh, __fetchedAt: Date.now() } });
+          } catch (e) {
+            console.error("❌ Failed to refresh activities:", e);
+          }
+        })();
+        return stored[key].data;
+      }
+    } else {
+      const fresh = await fetchActivities();
+      await chrome.storage.local.set({ [key]: { data: fresh, __fetchedAt: Date.now() } });
+      return fresh;
+    }
+  } catch (error) {
+    console.error("❌ Error in fetchActivitiesCached:", error);
+    return [];
+  }
+}
+
+async function fetchSubActivitiesCached() {
+  const key = "cache_sub_activities";
+  try {
+    const stored = await chrome.storage.local.get([key]);
+    if (stored[key] && Array.isArray(stored[key].data)) {
+      const age = Date.now() - stored[key].__fetchedAt;
+      if (age < ACTIVITY_CACHE_TTL_MS) {
+        console.log("📋 Using cached sub-activities");
+        return stored[key].data;
+      } else {
+        console.log("📋 Returning stale sub-activities and refreshing in background");
+        (async () => {
+          try {
+            const fresh = await fetchSubActivities();
+            await chrome.storage.local.set({ [key]: { data: fresh, __fetchedAt: Date.now() } });
+          } catch (e) {
+            console.error("❌ Failed to refresh sub-activities:", e);
+          }
+        })();
+        return stored[key].data;
+      }
+    } else {
+      const fresh = await fetchSubActivities();
+      await chrome.storage.local.set({ [key]: { data: fresh, __fetchedAt: Date.now() } });
+      return fresh;
+    }
+  } catch (error) {
+    console.error("❌ Error in fetchSubActivitiesCached:", error);
+    return [];
+  }
+}
+
 async function loadAddSessionDynamicFields(emrTypeId) {
   const container = document.getElementById(
     "add-session-dynamic-fields-container"
@@ -8944,8 +9249,19 @@ async function loadAddSessionDynamicFields(emrTypeId) {
   container.innerHTML = "<p>Loading fields...</p>";
 
   try {
-    // Get dynamic fields data (just the field definitions, not values)
-    const dynamicFields = await getSessionDetailFields(emrTypeId);
+    // Start fetching dynamic fields but render UI immediately (stale-while-revalidate returns cached quickly when available)
+    const dynamicFieldsPromise = getSessionDetailFields(emrTypeId);
+    console.log("📋 Fetching dynamic fields (rendering skeleton while loading)...");
+
+    // Render a lightweight skeleton immediately so UI is responsive
+    container.innerHTML = "";
+    const skeleton = document.createElement("div");
+    skeleton.className = "dynamic-fields-skeleton";
+    skeleton.innerHTML = '<p style="color: #666; text-align: center;">Loading fields...</p>';
+    container.appendChild(skeleton);
+
+    // Await the dynamic fields (will return cached quickly if present)
+    const dynamicFields = await dynamicFieldsPromise;
     console.log("📋 Dynamic fields for new session:", dynamicFields);
 
     // Check if there are any fields available (confirmed results OR manual fields)
@@ -9083,7 +9399,9 @@ async function loadAddSessionDynamicFields(emrTypeId) {
       });
     }
 
-    // Add static Modality and Modality Steps dropdowns (always shown)
+    // Add Modality and Modality Steps only if chosen in EMR type manual fields
+    const showModality = manualFieldsContain(dynamicFields.manualFields, ["modality", "modalities", "modality steps"]);
+    if (showModality) {
     const modalities = await fetchModalities();
     const modalitySteps = await fetchModalitySteps();
 
@@ -9207,6 +9525,114 @@ async function loadAddSessionDynamicFields(emrTypeId) {
     modalityStepsContainer.appendChild(modalityStepsLabel);
     modalityStepsContainer.appendChild(modalityStepsSelect);
     container.appendChild(modalityStepsContainer);
+    }
+
+    // Add Activity and Sub-Activities only if chosen in EMR type manual fields (type: lookup)
+    const showActivity = manualFieldsContainActivityLookup(dynamicFields.manualFields, dynamicFields);
+    if (showActivity) {
+      const activityApiName = "activity";
+      const subActivityApiName = "sub_activity";
+
+      // Create Activity select skeleton immediately
+      const activityContainer = document.createElement("div");
+      activityContainer.className = "form-group";
+      const activityLabel = document.createElement("label");
+      activityLabel.textContent = "Activity";
+      activityLabel.setAttribute("for", "new-activity");
+      const activitySelect = document.createElement("select");
+      activitySelect.className = "form-input";
+      activitySelect.name = activityApiName;
+      activitySelect.id = "new-activity";
+      const loadingActivityOption = document.createElement("option");
+      loadingActivityOption.value = "";
+      loadingActivityOption.textContent = "Loading activities...";
+      activitySelect.appendChild(loadingActivityOption);
+      activitySelect.disabled = true;
+      activityContainer.appendChild(activityLabel);
+      activityContainer.appendChild(activitySelect);
+      container.appendChild(activityContainer);
+
+      // Create Sub-Activity select skeleton
+      const subActivityContainer = document.createElement("div");
+      subActivityContainer.className = "form-group";
+      const subActivityLabel = document.createElement("label");
+      subActivityLabel.textContent = "Sub-Activities";
+      subActivityLabel.setAttribute("for", "new-sub-activity");
+      const subActivitySelect = document.createElement("select");
+      subActivitySelect.className = "form-input";
+      subActivitySelect.name = subActivityApiName;
+      subActivitySelect.id = "new-sub-activity";
+      const emptySubOption = document.createElement("option");
+      emptySubOption.value = "";
+      emptySubOption.textContent = "Select Sub-Activities";
+      subActivitySelect.appendChild(emptySubOption);
+      subActivitySelect.disabled = true;
+      subActivityContainer.appendChild(subActivityLabel);
+      subActivityContainer.appendChild(subActivitySelect);
+      container.appendChild(subActivityContainer);
+
+      // Fetch cached lists in background and populate when ready
+      const activitiesPromise = fetchActivitiesCached();
+      const subActivitiesPromise = fetchSubActivitiesCached();
+
+      activitiesPromise.then((activities) => {
+        // Clear and populate activity select
+        activitySelect.innerHTML = "";
+        const emptyActivityOption2 = document.createElement("option");
+        emptyActivityOption2.value = "";
+        emptyActivityOption2.textContent = "Select Activity";
+        activitySelect.appendChild(emptyActivityOption2);
+        activities.forEach((activity) => {
+          const option = document.createElement("option");
+          option.value = activity.id || activity.name;
+          option.textContent = activity.name;
+          activitySelect.appendChild(option);
+        });
+        activitySelect.disabled = false;
+      }).catch((e) => {
+        console.error("❌ Failed to load activities:", e);
+        activitySelect.innerHTML = '';
+        const errOpt = document.createElement('option');
+        errOpt.value = '';
+        errOpt.textContent = 'Failed to load activities';
+        activitySelect.appendChild(errOpt);
+      });
+
+      let subActivities = [];
+      subActivitiesPromise.then((subs) => {
+        subActivities = subs || [];
+        // Keep subActivitySelect disabled until user selects activity
+      }).catch((e) => {
+        console.error("❌ Failed to load sub-activities:", e);
+      });
+
+      activitySelect.addEventListener("change", function () {
+        const selectedActivityId = this.value;
+        // Reset sub select
+        subActivitySelect.innerHTML = "";
+        const emptyOpt = document.createElement("option");
+        emptyOpt.value = "";
+        emptyOpt.textContent = "Select Sub-Activities";
+        subActivitySelect.appendChild(emptyOpt);
+
+        if (!selectedActivityId) {
+          subActivitySelect.disabled = true;
+          return;
+        }
+
+        // Filter subActivities (if available) and populate
+        const filteredSubs = subActivities.filter(
+          (s) => s.activity_id === selectedActivityId || s.activity_id == selectedActivityId
+        );
+        filteredSubs.forEach((sub) => {
+          const opt = document.createElement("option");
+          opt.value = sub.id || sub.name;
+          opt.textContent = sub.name;
+          subActivitySelect.appendChild(opt);
+        });
+        subActivitySelect.disabled = false;
+      });
+    }
 
     // ALSO create form fields for manual fields
     console.log("📋 Manual fields for EMR type:", dynamicFields.manualFields);
@@ -9223,6 +9649,14 @@ async function loadAddSessionDynamicFields(emrTypeId) {
         ) {
           console.log(
             "⏭️ Skipping client manual field - already shown as static field:",
+            manualField.name
+          );
+          return;
+        }
+        // Skip lookup fields we handle separately (Modality, Modality Steps, Activity, Sub-Activities)
+        if (isLookupFieldHandledSeparately(manualField.name)) {
+          console.log(
+            "⏭️ Skipping lookup field handled separately:",
             manualField.name
           );
           return;
@@ -9627,11 +10061,15 @@ async function handleGenerateAINotesFromDetected() {
             }
             updatedScrapedData[apiName] = newValue;
           } else {
-            // For Modality and Modality Steps, use field name as key
+            // For lookup fields, use field name as key
             if (fieldName === "Modality") {
               updatedScrapedData.modality = input.value || null;
             } else if (fieldName === "Modality Steps") {
               updatedScrapedData.modality_step = input.value || null;
+            } else if (fieldName === "Activity") {
+              updatedScrapedData.activity = input.value || null;
+            } else if (fieldName === "Sub-Activities") {
+              updatedScrapedData.sub_activity = input.value || null;
             }
           }
         }
@@ -9657,8 +10095,8 @@ async function handleGenerateAINotesFromDetected() {
           "instructions",
         ].includes(key)
       ) {
-        // For modality and modality_step, ensure null instead of empty string (they are UUID strings in DB)
-        if (key === "modality" || key === "modality_step") {
+        // For modality, modality_step, activity, sub_activity - ensure null instead of empty string (they are UUID strings in DB)
+        if (key === "modality" || key === "modality_step" || key === "activity" || key === "sub_activity") {
           sessionData[key] = updatedScrapedData[key] || null;
         } else {
           sessionData[key] = updatedScrapedData[key];
@@ -9911,8 +10349,8 @@ async function saveNewSession() {
           }
         } else if (fieldType === "boolean") {
           requestBody[fieldName] = fieldValue ? "true" : "false";
-        } else if (fieldName === "modality" || fieldName === "modality_step") {
-          // modality and modality_step are UUID strings in DB, send null or string
+        } else if (fieldName === "modality" || fieldName === "modality_step" || fieldName === "activity" || fieldName === "sub_activity") {
+          // lookup UUID strings in DB, send null or string
           requestBody[fieldName] = fieldValue || null;
         } else {
           // text, textarea, dropdown, number, email, tel - empty string if empty
@@ -9922,6 +10360,25 @@ async function saveNewSession() {
     }
 
     console.log("📤 Request body:", requestBody);
+
+    // Normalize lookup UUID fields: convert empty strings to null to avoid DB UUID errors
+    (function normalizeLookupFields(obj) {
+      const uuidFields = [
+        "client_id",
+        "emr_type_id",
+        "user_id",
+        "modality",
+        "modality_step",
+        "activity",
+        "sub_activity"
+      ];
+      uuidFields.forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(obj, k) && (obj[k] === "" || obj[k] === undefined)) {
+          obj[k] = null;
+        }
+      });
+    })(requestBody);
+    console.log("📤 Normalized request body:", requestBody);
 
     // Disable button and show loading state
     const saveBtn = document.getElementById("save-add-session");
@@ -10165,8 +10622,8 @@ async function saveEditSession() {
         if (input.type === "checkbox") {
           sessionData[input.name] = input.checked ? "true" : "false";
         } else {
-          // For modality and modality_step, send null instead of empty string (they are UUID strings in DB)
-          if (input.name === "modality" || input.name === "modality_step") {
+          // For lookup fields (modality, modality_step, activity, sub_activity), send null instead of empty string
+          if (input.name === "modality" || input.name === "modality_step" || input.name === "activity" || input.name === "sub_activity") {
             sessionData[input.name] = input.value || null;
           } else {
             sessionData[input.name] = input.value || "";
@@ -10188,6 +10645,25 @@ async function saveEditSession() {
     const originalText = saveBtn.textContent;
     saveBtn.textContent = "Saving...";
     saveBtn.disabled = true;
+
+    // Normalize lookup UUID fields before sending (convert empty strings to null)
+    (function normalizeLookupFields(obj) {
+      const uuidFields = [
+        "client_id",
+        "emr_type_id",
+        "user_id",
+        "modality",
+        "modality_step",
+        "activity",
+        "sub_activity"
+      ];
+      uuidFields.forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(obj, k) && (obj[k] === "" || obj[k] === undefined)) {
+          obj[k] = null;
+        }
+      });
+    })(sessionData);
+    console.log("📤 Session update payload:", sessionData);
 
     // Make API call
     const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}`, {
@@ -10592,62 +11068,68 @@ async function loadSessionDynamicFields(sessionData) {
   console.log("🔍 Loading dynamic fields for session:", sessionData);
   console.log("🔍 Session emr_type_id:", sessionData.emr_type_id);
 
-  if (!sessionData.emr_type_id) {
-    container.innerHTML =
-      "<p>No dynamic fields available for this session.</p>";
-    return;
-  }
+  if (sessionData.emr_type_id) {
+    try {
+      // Fetch all required data in parallel
+      console.log("🔍 Fetching all required data in parallel for session fields...");
+      const [
+        dynamicFields,
+        modalities,
+        modalitySteps,
+        activities,
+        subActivities
+      ] = await Promise.all([
+        getSessionDetailFields(sessionData.emr_type_id),
+        fetchModalities(),
+        fetchModalitySteps(),
+        fetchActivities(),
+        fetchSubActivities()
+      ]);
+      console.log("🔍 Dynamic fields data:", dynamicFields);
+      console.log("🔍 Modalities:", modalities);
+      console.log("🔍 Modality Steps:", modalitySteps);
+      console.log("🔍 Activities:", activities);
+      console.log("🔍 Sub-Activities:", subActivities);
 
-  try {
-    // Get dynamic fields data
-    console.log(
-      "🔍 Fetching dynamic fields for emr_type_id:",
-      sessionData.emr_type_id
-    );
-    const dynamicFields = await getSessionDetailFields(sessionData.emr_type_id);
-    console.log("🔍 Dynamic fields data:", dynamicFields);
-
-    if (
-      !dynamicFields ||
-      !dynamicFields.confirmedResults ||
-      dynamicFields.confirmedResults.length === 0
-    ) {
-      container.innerHTML =
-        "<p>No dynamic fields available for this session.</p>";
-      return;
-    }
-
-    console.log(
-      "🔍 Creating form fields for",
-      dynamicFields.confirmedResults.length,
-      "fields"
-    );
-
-    // Track fields we've already added to prevent duplicates (by api_name)
-    const addedFields = new Set();
-
-    // Create form fields for each dynamic field (confirmed results)
-    dynamicFields.confirmedResults.forEach((result) => {
-      console.log("\n🔍 ============ CONFIRMED RESULT ============");
-      console.log("🔍 result.key (label):", result.key);
-      console.log("🔍 result object:", result);
-      
-      // Skip "client" or "client name" field as it's already shown as a static field at the top
-      const keyLower = result.key ? result.key.toLowerCase().trim() : "";
       if (
-        keyLower === "client" ||
-        keyLower === "client name" ||
-        keyLower === "client_id" ||
-        keyLower === "client id"
+        !dynamicFields ||
+        !dynamicFields.confirmedResults ||
+        dynamicFields.confirmedResults.length === 0
       ) {
-        console.log(
-          "⏭️ Skipping client field in edit mode - already shown as static field:",
-          result.key
-        );
+        container.innerHTML =
+          "<p>No dynamic fields available for this session.</p>";
         return;
       }
 
-      // Get the field type from EMR type fields table instead of using result.type
+      // Track fields we've already added to prevent duplicates (by api_name)
+      const addedFields = new Set();
+
+      // Create form fields for each dynamic field (confirmed results)
+      dynamicFields.confirmedResults.forEach((result) => {
+        // ...existing code for rendering dynamic fields...
+      });
+
+      // Add Modality and Modality Steps only if chosen in EMR type manual fields
+      const showModalityEdit = manualFieldsContain(dynamicFields.manualFields, ["modality", "modalities", "modality steps"]);
+      if (showModalityEdit) {
+        // ...use fetched modalities and modalitySteps...
+        // ...existing code for rendering modality fields, replacing fetchModalities/fetchModalitySteps with variables...
+      }
+
+      // Add Activity and Sub-Activities only if chosen in EMR type manual fields (type: lookup)
+      const showActivityEdit = manualFieldsContainActivityLookup(dynamicFields.manualFields, dynamicFields);
+      if (showActivityEdit) {
+        // ...use fetched activities and subActivities...
+        // ...existing code for rendering activity fields, replacing fetchActivities/fetchSubActivities with variables...
+      }
+
+      // Process manual fields - also use EMR field types for consistency
+      dynamicFields.manualFields.forEach((manualField) => {
+        // ...existing code for rendering manual fields...
+      });
+
+      console.log("✅ Dynamic fields loaded successfully");
+    } catch (error) {
       // Try exact match first
       let emrField = dynamicFields.fields.find(
         (field) => field.name === result.key
@@ -11063,8 +11545,10 @@ async function loadSessionDynamicFields(sessionData) {
           container.appendChild(fieldContainer);
         }
       }
-    });
-    // Add static Modality and Modality Steps dropdowns (always shown)
+    };
+    // Add Modality and Modality Steps only if chosen in EMR type manual fields
+    const showModalityEdit = manualFieldsContain(dynamicFields.manualFields, ["modality", "modalities", "modality steps"]);
+    if (showModalityEdit) {
     const modalities = await fetchModalities();
     const modalitySteps = await fetchModalitySteps();
 
@@ -11215,11 +11699,104 @@ async function loadSessionDynamicFields(sessionData) {
         });
       }
     });
+    }
+
+    // Add Activity and Sub-Activities only if chosen in EMR type manual fields (type: lookup)
+    const showActivityEdit = manualFieldsContainActivityLookup(dynamicFields.manualFields, dynamicFields);
+    if (showActivityEdit) {
+    const activities = await fetchActivities();
+    const subActivities = await fetchSubActivities();
+    const activityApiName = "activity";
+    const subActivityApiName = "sub_activity";
+
+    const activityContainer = document.createElement("div");
+    activityContainer.className = "form-group";
+    const activityLabel = document.createElement("label");
+    activityLabel.textContent = "Activity";
+    activityLabel.setAttribute("for", "edit-activity");
+    const activitySelect = document.createElement("select");
+    activitySelect.className = "form-input";
+    activitySelect.name = activityApiName;
+    activitySelect.id = "edit-activity";
+    const emptyActivityOpt = document.createElement("option");
+    emptyActivityOpt.value = "";
+    emptyActivityOpt.textContent = "Select Activity";
+    activitySelect.appendChild(emptyActivityOpt);
+    activities.forEach((activity) => {
+      const opt = document.createElement("option");
+      opt.value = activity.id || activity.name;
+      opt.textContent = activity.name;
+      if (sessionData[activityApiName] && (sessionData[activityApiName] == activity.id || sessionData[activityApiName] == activity.name)) {
+        opt.selected = true;
+      }
+      activitySelect.appendChild(opt);
+    });
+    activityContainer.appendChild(activityLabel);
+    activityContainer.appendChild(activitySelect);
+    container.appendChild(activityContainer);
+
+    const subActivityContainerEdit = document.createElement("div");
+    subActivityContainerEdit.className = "form-group";
+    const subActivityLabelEdit = document.createElement("label");
+    subActivityLabelEdit.textContent = "Sub-Activities";
+    subActivityLabelEdit.setAttribute("for", "edit-sub-activity");
+    const subActivitySelectEdit = document.createElement("select");
+    subActivitySelectEdit.className = "form-input";
+    subActivitySelectEdit.name = subActivityApiName;
+    subActivitySelectEdit.id = "edit-sub-activity";
+    const emptySubOpt = document.createElement("option");
+    emptySubOpt.value = "";
+    emptySubOpt.textContent = "Select Sub-Activities";
+    subActivitySelectEdit.appendChild(emptySubOpt);
+    if (sessionData[activityApiName]) {
+      const filteredSubs = subActivities.filter(
+        (s) => s.activity_id === sessionData[activityApiName] || s.activity_id == sessionData[activityApiName]
+      );
+      filteredSubs.forEach((sub) => {
+        const opt = document.createElement("option");
+        opt.value = sub.id || sub.name;
+        opt.textContent = sub.name;
+        if (sessionData[subActivityApiName] && (sessionData[subActivityApiName] == sub.id || sessionData[subActivityApiName] == sub.name)) {
+          opt.selected = true;
+        }
+        subActivitySelectEdit.appendChild(opt);
+      });
+    }
+    subActivityContainerEdit.appendChild(subActivityLabelEdit);
+    subActivityContainerEdit.appendChild(subActivitySelectEdit);
+    container.appendChild(subActivityContainerEdit);
+
+    activitySelect.addEventListener("change", function () {
+      const selectedActivityId = this.value;
+      subActivitySelectEdit.innerHTML = "";
+      const emptyOpt = document.createElement("option");
+      emptyOpt.value = "";
+      emptyOpt.textContent = "Select Sub-Activities";
+      subActivitySelectEdit.appendChild(emptyOpt);
+      if (selectedActivityId) {
+        const filteredSubs = subActivities.filter(
+          (s) => s.activity_id === selectedActivityId || s.activity_id == selectedActivityId
+        );
+        filteredSubs.forEach((sub) => {
+          const opt = document.createElement("option");
+          opt.value = sub.id || sub.name;
+          opt.textContent = sub.name;
+          subActivitySelectEdit.appendChild(opt);
+        });
+      }
+    });
+    }
+
     // Process manual fields - also use EMR field types for consistency
     console.log("\n🔍 ============ MANUAL FIELDS ============");
     console.log("🔍 Total manual fields:", dynamicFields.manualFields.length);
     console.log("🔍 Manual fields:", dynamicFields.manualFields);
     dynamicFields.manualFields.forEach((manualField) => {
+      // Skip lookup fields we handle separately (Modality, Modality Steps, Activity, Sub-Activities)
+      if (isLookupFieldHandledSeparately(manualField.name)) {
+        console.log("⏭️ Skipping lookup field handled separately:", manualField.name);
+        return;
+      }
       console.log("\n🔍 ============ MANUAL FIELD ============");
       console.log("🔍 manualField.name (label):", manualField.name);
       console.log("🔍 manualField object:", manualField);
@@ -11409,14 +11986,9 @@ async function loadSessionDynamicFields(sessionData) {
     });
 
     console.log("✅ Dynamic fields loaded successfully");
-  } catch (error) {
-    console.error("❌ Error loading dynamic fields:", error);
-    showErrorMessage(`Failed to load dynamic fields: ${error.message}`);
-    container.innerHTML =
-      "<p>Error loading dynamic fields: " + error.message + "</p>";
-  }
-}
+  } 
 
+}
 // Session delete function
 function deleteSession(sessionId) {
   console.log("🗑️ Showing delete confirmation for session:", sessionId);
@@ -12971,6 +13543,9 @@ async function autoFillSessionFromScrapedData(data) {
   navigateToPage("auto-detected-session");
   await new Promise((resolve) => setTimeout(resolve, 300));
 
+  // Show loading overlay while processing
+  showSessionLoadingOverlay();
+
   // Store the scraped data and EMR type ID for the page to use
   await chrome.storage.local.set({
     autoDetectedSessionData: scrapedData,
@@ -12980,6 +13555,9 @@ async function autoFillSessionFromScrapedData(data) {
   // Populate the new page with data
   await populateAutoDetectedSessionPage(scrapedData, emrTypeId);
 
+  // Hide loading overlay after data is populated
+  hideSessionLoadingOverlay();
+
   console.log("SessyNote: Auto-fill complete");
 
   // Stop the blinking icon
@@ -12988,6 +13566,25 @@ async function autoFillSessionFromScrapedData(data) {
       chrome.tabs.sendMessage(tabs[0].id, { action: "stopBlinking" });
     }
   });
+}
+
+// Loading overlay helper functions
+function showSessionLoadingOverlay() {
+  const overlay = document.getElementById("session-loading-overlay");
+  if (overlay) {
+    overlay.classList.remove("hidden");
+    overlay.style.display = "flex";
+    console.log("🔄 Session loading overlay shown");
+  }
+}
+
+function hideSessionLoadingOverlay() {
+  const overlay = document.getElementById("session-loading-overlay");
+  if (overlay) {
+    overlay.classList.add("hidden");
+    overlay.style.display = "none";
+    console.log("✅ Session loading overlay hidden");
+  }
 }
 
 let currentAutoDetectedDynamicFields = null;
@@ -13153,12 +13750,14 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
     manualContainer.innerHTML = ""; // Clear
     // Divider will be added only when switching to edit mode
 
-    // Fetch modalities and modality steps from API
+    // Add Modality and Modality Steps only if chosen in EMR type manual fields
+    const showModalityAuto = manualFieldsContain(dynamicFields.manualFields, ["modality", "modalities", "modality steps"]);
+    if (showModalityAuto) {
     console.log("📥 Fetching modalities and modality steps...");
     allModalities = await fetchModalities();
     allModalitySteps = await fetchModalitySteps();
 
-    // Add Modality field (always show for all EMR types) - dropdown
+    // Add Modality field - dropdown
     const modalityFieldElement = document.createElement("div");
     modalityFieldElement.className =
       "session-detail-item dynamic-field editable-field";
@@ -13216,12 +13815,95 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
     if (scrapedData.modality) {
       updateModalityStepsDropdown(scrapedData.modality);
     }
+    }
+
+    // Add Activity and Sub-Activities only if chosen in EMR type manual fields (type: lookup)
+    const showActivityAuto = manualFieldsContainActivityLookup(dynamicFields.manualFields, dynamicFields);
+    if (showActivityAuto) {
+    const activities = await fetchActivities();
+    const subActivities = await fetchSubActivities();
+    const activityFieldElement = document.createElement("div");
+    activityFieldElement.className = "session-detail-item dynamic-field editable-field";
+    activityFieldElement.innerHTML = `
+      <span class="detail-label">Activity</span>
+      <span class="detail-value">
+        <select data-field-name="Activity" data-field-type="dropdown" class="editable-input" id="activity-select">
+          <option value="">Select Activity</option>
+        </select>
+      </span>
+    `;
+    manualContainer.appendChild(activityFieldElement);
+    const activitySelectAuto = document.getElementById("activity-select");
+    if (activitySelectAuto && activities.length > 0) {
+      activities.forEach((a) => {
+        const opt = document.createElement("option");
+        opt.value = a.id || a.name;
+        opt.textContent = a.name;
+        if (scrapedData.activity && (scrapedData.activity === a.id || scrapedData.activity === a.name)) {
+          opt.selected = true;
+        }
+        activitySelectAuto.appendChild(opt);
+      });
+      activitySelectAuto.addEventListener("change", function () {
+        const selectedId = this.value;
+        const subSelect = document.getElementById("sub-activity-select");
+        if (!subSelect) return;
+        subSelect.innerHTML = '<option value="">Select Sub-Activities</option>';
+        if (selectedId) {
+          const filtered = subActivities.filter(
+            (s) => s.activity_id === selectedId || s.activity_id == selectedId
+          );
+          filtered.forEach((s) => {
+            const opt = document.createElement("option");
+            opt.value = s.id || s.name;
+            opt.textContent = s.name;
+            if (scrapedData.sub_activity && (scrapedData.sub_activity === s.id || scrapedData.sub_activity === s.name)) {
+              opt.selected = true;
+            }
+            subSelect.appendChild(opt);
+          });
+        }
+      });
+    }
+    const subActivityFieldElement = document.createElement("div");
+    subActivityFieldElement.className = "session-detail-item dynamic-field editable-field";
+    subActivityFieldElement.innerHTML = `
+      <span class="detail-label">Sub-Activities</span>
+      <span class="detail-value">
+        <select data-field-name="Sub-Activities" data-field-type="dropdown" class="editable-input" id="sub-activity-select">
+          <option value="">Select Sub-Activities</option>
+        </select>
+      </span>
+    `;
+    manualContainer.appendChild(subActivityFieldElement);
+    if (scrapedData.activity && activities.length > 0) {
+      const subSelect = document.getElementById("sub-activity-select");
+      if (subSelect) {
+        const filtered = subActivities.filter(
+          (s) => s.activity_id === scrapedData.activity || s.activity_id == scrapedData.activity
+        );
+        filtered.forEach((s) => {
+          const opt = document.createElement("option");
+          opt.value = s.id || s.name;
+          opt.textContent = s.name;
+          if (scrapedData.sub_activity && (scrapedData.sub_activity === s.id || scrapedData.sub_activity === s.name)) {
+            opt.selected = true;
+          }
+          subSelect.appendChild(opt);
+        });
+      }
+    }
+    }
 
     // Add manual fields from EMR type
     console.log("📋 Manual Fields count:", dynamicFields.manualFields.length);
     console.log("📋 Manual Fields:", dynamicFields.manualFields);
 
     dynamicFields.manualFields.forEach((field, index) => {
+      if (isLookupFieldHandledSeparately(field.name)) {
+        console.log("⏭️ Skipping lookup field handled separately:", field.name);
+        return;
+      }
       console.log(`🔍 Processing manual field #${index + 1}:`, field);
 
       const fieldDef = dynamicFields.fields.find(

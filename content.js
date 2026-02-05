@@ -202,6 +202,14 @@
 
   // Inject into page
   document.body.appendChild(toggleBtn);
+
+  // Flag indicating the content script was injected and is active
+  try {
+    window.__sessynote_content_injected = true;
+    console.log("SessyNote: Content script injected and active");
+  } catch (e) {
+    // ignore
+  }
 })();
 
 // ===============================

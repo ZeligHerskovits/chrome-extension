@@ -90,7 +90,7 @@
         <div class="header-actions">
           <div class="action-icon" id="toggle-side-panel" title="Toggle Side Panel">✕</div>
           <div class="action-icon" title="Share">↗️</div>
-          <div class="action-icon" title="Next">▶️</div>
+          <div class="action-icon" title="Next">▶️</div>     <!-- Debug: Force blink for testing -->
         </div>
       </div>
 
@@ -751,6 +751,14 @@
 
         <!-- Auto-Detected Session Page Content -->
         <div class="page-content" id="auto-detected-session-page" style="display: none">
+          <!-- Loading Overlay for Session Detection -->
+          <div class="session-loading-overlay hidden" id="session-loading-overlay" style="display: none;">
+            <div class="session-loading-content">
+              <div class="session-loading-spinner"></div>
+              <p class="session-loading-text">Detecting session...</p>
+            </div>
+          </div>
+
           <!-- Session Detected Banner -->
           <div class="session-detected-banner">
             <div class="detected-icon">✓</div>
