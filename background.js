@@ -186,7 +186,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       try {
         const currentDomain = new URL(message.currentUrl).hostname;
-        console.log("SessyNote: Current domain:", currentDomain);
+        // Normalize domain by removing www. prefix for comparison
+        const normalizedCurrentDomain = currentDomain.replace(/^www\./, '');
+        console.log("SessyNote: Current domain:", currentDomain, "-> normalized:", normalizedCurrentDomain);
 
         // Step 1: Fetch user profile
         const profileResponse = await fetch(`${API_BASE_URL}/me`, {
@@ -242,11 +244,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           const emrTypeData = await emrTypeResponse.json();
           const emrUrl = emrTypeData.emr_url || "";
+          // Normalize EMR URL by removing www. prefix for comparison
+          const normalizedEmrUrl = emrUrl.replace(/^www\./, '');
 
-          console.log(`SessyNote: EMR Type ${emrTypeId} URL: ${emrUrl}`);
+          console.log(`SessyNote: EMR Type ${emrTypeId} URL: ${emrUrl} -> normalized: ${normalizedEmrUrl}`);
 
-          // Check if URL matches
-          if (currentDomain === emrUrl) {
+          // Check if URL matches (compare normalized versions)
+          if (normalizedCurrentDomain === normalizedEmrUrl) {
             console.log(
               `SessyNote: ✅ URL match found! Using EMR Type ID: ${emrTypeId}`
             );
@@ -334,6 +338,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
 
             const emrType = await response.json();
+            console.log("SessyNote: 🔍 EMR Type fetched from API:", {
+              id: emrType.id,
+              name: emrType.name,
+              is_popup: emrType.is_popup,
+              popup_root_selector: emrType.popup_root_selector,
+              hasJsonResponse: !!emrType.json_response
+            });
 
             // Parse json_response field if it's a JSON string
             if (
@@ -529,6 +540,44 @@ async function handlePageCaptureForAPI(tabId, url) {
 async function progressiveCapture() {
   console.log("🔄 Finding scrollable container...");
 
+  // Ensure form field values are reflected in DOM attributes/text
+  function syncFormStateToDOM(root = document) {
+    try {
+      // Inputs
+      root.querySelectorAll("input").forEach((el) => {
+        const type = (el.getAttribute("type") || "text").toLowerCase();
+        if (type === "checkbox" || type === "radio") {
+          if (el.checked) {
+            el.setAttribute("checked", "");
+          } else {
+            el.removeAttribute("checked");
+          }
+        } else {
+          el.setAttribute("value", el.value || "");
+        }
+      });
+
+      // Textareas
+      root.querySelectorAll("textarea").forEach((el) => {
+        // Preserve current value in text content
+        el.textContent = el.value || "";
+      });
+
+      // Selects
+      root.querySelectorAll("select").forEach((el) => {
+        Array.from(el.options).forEach((opt) => {
+          if (opt.selected) {
+            opt.setAttribute("selected", "");
+          } else {
+            opt.removeAttribute("selected");
+          }
+        });
+      });
+    } catch (e) {
+      console.warn("SessyNote: Failed to sync form state to DOM", e);
+    }
+  }
+
   // Find the scrollable element (could be window or a div)
   function findScrollableContainer() {
     const candidates = [];
@@ -592,7 +641,8 @@ async function progressiveCapture() {
     console.log("✅ All content should now be loaded in DOM");
     console.log("📏 New height:", scrollContainer.scrollHeight, "px");
 
-    // STEP 3: Capture complete HTML with ALL data
+    // STEP 3: Sync form values to DOM and capture complete HTML with ALL data
+    syncFormStateToDOM(document);
     const completeHTML = document.documentElement.outerHTML;
 
     console.log(
@@ -658,6 +708,8 @@ async function progressiveCapture() {
     // No scrollable container found - just capture as-is
     console.log("⚠️ No scrollable div found, capturing without modification");
 
+    // Sync form values to DOM before capture
+    syncFormStateToDOM(document);
     const completeHTML = document.documentElement.outerHTML;
 
     // Get styles

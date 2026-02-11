@@ -260,35 +260,50 @@ function stopLateContentObserver() {
   }
 }
 
-// Decide what DOM subtree to scrape from.
-// For normal pages, this is the whole document.
-// For popup-based EMR types (is_popup + popup_root_selector), this will be the popup container.
-function getScrapeRoot() {
-  // If current EMR type is marked as popup-based and has a popup_root_selector,
-  // try to find that popup container and use it as the scraping root.
+// Determine if an element is visible (not hidden/collapsed)
+function isElementVisible(el) {
+  if (!el) return false;
+  const style = window.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  if (el.getAttribute("aria-hidden") === "true") return false;
+  return el.getClientRects().length > 0;
+}
+
+// Get the popup root element if configured
+function getPopupRoot() {
   if (
     activeEmrConfig &&
     activeEmrConfig.isPopup &&
     activeEmrConfig.popupRootSelector
   ) {
     try {
-      const popup = document.querySelector(activeEmrConfig.popupRootSelector);
-      if (popup) {
-        console.log(
-          "SessyNote: Using popup root for scrape:",
-          activeEmrConfig.popupRootSelector
-        );
-        return popup;
-      }
+      return document.querySelector(activeEmrConfig.popupRootSelector);
     } catch (e) {
       console.error(
-        "SessyNote: Error using popup_root_selector as scrape root:",
+        "SessyNote: Error querying popup_root_selector:",
         e
       );
     }
   }
+  return null;
+}
 
-  // Fallback: scrape entire document (existing behavior)
+// Decide what DOM subtree to scrape from.
+// For normal pages, this is the whole document.
+// For popup-based EMR types, this will be the popup container when visible.
+function getScrapeRoot() {
+  if (activeEmrConfig && activeEmrConfig.isPopup) {
+    const popup = getPopupRoot();
+    if (popup && isElementVisible(popup)) {
+      console.log(
+        "SessyNote: Using popup root for scrape:",
+        activeEmrConfig.popupRootSelector
+      );
+      return popup;
+    }
+  }
+
+  // Fallback: scrape entire document (non-popup types)
   return document;
 }
 
@@ -301,6 +316,26 @@ async function tryLateScrape() {
   console.log(
     "SessyNote: Detected DOM changes after initial check, trying late scrape (e.g. popup)..."
   );
+
+  // For popup types, only scrape when popup is visible AND we have row context
+  if (activeEmrConfig.isPopup) {
+    const popup = getPopupRoot();
+    if (!popup || !isElementVisible(popup)) {
+      console.log(
+        "SessyNote: ⏸️ Popup not visible yet. Waiting for popup to open..."
+      );
+      return;
+    }
+    if (!lastClickedSessionRow) {
+      console.log(
+        "SessyNote: ⏸️ Popup is visible but no row clicked yet. Waiting..."
+      );
+      return;
+    }
+    console.log(
+      "SessyNote: ✅ Popup is visible AND row was clicked. Scraping popup + row data now."
+    );
+  }
 
   const root = getScrapeRoot();
   const scrapedData = scrapePageData(activeEmrConfig.emrResponse, root);
@@ -412,16 +447,43 @@ async function checkAndScrapeIfMatch() {
         activeEmrConfig = {
           emrTypeId,
           emrResponse,
-          // Popup metadata comes from backend EMR type definition
-          isPopup: !!emrType.is_popup,
-          popupRootSelector: emrType.popup_root_selector || null,
+          // Popup metadata comes from backend EMR type definition,
+          // but fall back to json_response if present there.
+          isPopup: !!emrType.is_popup || !!emrResponse?.is_popup,
+          popupRootSelector:
+            emrType.popup_root_selector ||
+            emrResponse?.popup_root_selector ||
+            null,
         };
         sessionAlreadyScraped = false;
 
+        console.log("SessyNote: ⚙️ EMR Type Configuration:", {
+          emrTypeId,
+          isPopup: activeEmrConfig.isPopup,
+          popupRootSelector: activeEmrConfig.popupRootSelector,
+          emrType_is_popup: emrType.is_popup,
+          emrResponse_is_popup: emrResponse?.is_popup,
+          fieldCount: Array.isArray(emrResponse?.fields)
+            ? emrResponse.fields.length
+            : 0,
+        });
+
+        // For popup EMR types, skip initial scrape and only watch for popup to appear
+        if (activeEmrConfig.isPopup) {
+          console.log(
+            "SessyNote: 🔍 Popup-based EMR type detected. Starting observer to watch for popup..."
+          );
+          ensureLateContentObserver();
+          return; // DON'T scrape - wait for popup to appear
+        }
+        
+        console.log("SessyNote: 📄 Non-popup EMR type. Waiting 10 seconds then scraping...");
+
         // Wait for QuickBase page to fully load (takes longer due to dynamic content)
+        // Only for NON-popup types
         await new Promise((resolve) => setTimeout(resolve, 10000));
 
-        // Scrape data from page (or popup if one is open)
+        // Scrape data from page (non-popup types only)
         const root = getScrapeRoot();
         const scrapedData = scrapePageData(emrResponse, root);
 
@@ -429,19 +491,11 @@ async function checkAndScrapeIfMatch() {
 
         // Check if enough values were found
         const foundValuesCount = Object.keys(scrapedData).length;
-        // Require at least 5 fields for both popup and non-popup EMR types
         const minFields = 5;
         if (foundValuesCount < minFields) {
           console.log(
             `SessyNote: Only found ${foundValuesCount} value(s). Need at least ${minFields} to consider this a session page.`
           );
-
-          // For popup EMR types, start watching for DOM changes so we can
-          // rescrape when the popup actually appears. For non-popup EMR
-          // types, we just stop here (no repeated automatic scraping).
-          if (activeEmrConfig.isPopup) {
-            ensureLateContentObserver();
-          }
           return;
         }
 
@@ -450,7 +504,6 @@ async function checkAndScrapeIfMatch() {
         );
 
         sessionAlreadyScraped = true;
-        stopLateContentObserver();
 
         // Send to background script
         chrome.runtime.sendMessage({
@@ -493,157 +546,217 @@ async function checkAndScrapeIfMatch() {
   urlObserver.observe(document.body, { childList: true, subtree: true });
 })();
 
-// Helper to evaluate an XPath for a field, using different context rules for
-// row-relative vs. popup/global XPaths.
-// - If xpath starts with ".//"  → treat as row‑relative and use the clicked <tr>.
-// - If xpath starts with "//"   → treat as popup/document‑scoped and use
-//   popup_root_selector (for popup EMRs) or the full document.
-function evaluateFieldXPath(xpath, defaultRoot) {
-  // Determine popup_root_selector from the active EMR config (if any)
+// Helper to determine the appropriate context root for selector evaluation
+// For row-relative selectors (starting with './/'), use the clicked row
+// For popup/document selectors, use popup root or document
+function getContextRoot(isRowRelative, defaultRoot = document) {
   const popupRootSelector =
     activeEmrConfig && activeEmrConfig.isPopup
       ? activeEmrConfig.popupRootSelector || null
       : null;
 
-  let context = null;
-
-  try {
-    if (xpath.startsWith(".//")) {
-      // Row/grid field → use the last clicked <tr> as context when available
-      context = lastClickedSessionRow || defaultRoot || document;
-      if (!lastClickedSessionRow) {
-        console.warn(
-          "⚠️ SessyNote: Row-relative XPath used but no lastClickedSessionRow is set. Falling back to default root."
-        );
-      } else {
-        console.log(
-          "🔍 SessyNote: Using last clicked session row as XPath context for row-relative field."
-        );
-      }
+  if (isRowRelative) {
+    // Row/grid field → use the last clicked <tr> as context when available
+    if (!lastClickedSessionRow) {
+      console.warn(
+        "⚠️ SessyNote: Row-relative selector used but no lastClickedSessionRow is set. Falling back to default root."
+      );
     } else {
-      // Popup or full-document field → use popup root if configured/found, else default root/document
-      let popupRoot = null;
-      if (popupRootSelector) {
-        try {
-          popupRoot = document.querySelector(popupRootSelector);
-        } catch (e) {
-          console.error(
-            "❌ SessyNote: Error querying popup_root_selector for XPath context:",
-            e
+      console.log(
+        "🔍 SessyNote: Using last clicked session row as context for row-relative field."
+      );
+    }
+    return lastClickedSessionRow || defaultRoot || document;
+  } else {
+    // Popup or full-document field → use popup root if configured/found, else default root/document
+    if (popupRootSelector) {
+      try {
+        const popupRoot = document.querySelector(popupRootSelector);
+        if (popupRoot) {
+          console.log(
+            "🔍 SessyNote: Using popup_root_selector as context:",
+            popupRootSelector
           );
+          return popupRoot;
         }
-      }
-
-      if (popupRoot) {
-        console.log(
-          "🔍 SessyNote: Using popup_root_selector as XPath context:",
-          popupRootSelector
+      } catch (e) {
+        console.error(
+          "❌ SessyNote: Error querying popup_root_selector:",
+          e
         );
-        context = popupRoot;
-      } else {
-        context = defaultRoot || document;
       }
     }
-
-    const result = document.evaluate(
-      xpath,
-      context || document,
-      null,
-      XPathResult.FIRST_ORDERED_NODE_TYPE,
-      null
-    );
-
-    const node = result.singleNodeValue;
-    if (!node) {
-      return { node: null, value: "" };
-    }
-
-    // Accept both elements and text nodes; textContent works for both.
-    const value = (node.textContent || "").trim();
-    return { node, value };
-  } catch (e) {
-    console.error("❌ SessyNote: XPath evaluation error:", e);
-    return { node: null, value: "" };
+    return defaultRoot || document;
   }
 }
 
-function scrapePageData(responseFields, root = document) {
+// Evaluate a single selector (XPath or CSS) and return the extracted value
+function evaluateSelector(selector, selectorType, context = document) {
+  try {
+    let node = null;
+    let value = "";
+
+    if (selectorType === "xpath") {
+      // Evaluate XPath
+      const result = document.evaluate(
+        selector,
+        context,
+        null,
+        XPathResult.FIRST_ORDERED_NODE_TYPE,
+        null
+      );
+      node = result.singleNodeValue;
+      if (node) {
+        value = (node.textContent || "").trim();
+      }
+    } else if (selectorType === "css") {
+      // Evaluate CSS selector
+      node = context.querySelector(selector);
+      if (node) {
+        value = (node.textContent || "").trim();
+      }
+    }
+
+    return { node, value, success: !!value };
+  } catch (e) {
+    console.error(
+      `❌ SessyNote: Error evaluating ${selectorType} selector:`,
+      selector,
+      e
+    );
+    return { node: null, value: "", success: false };
+  }
+}
+
+// Try a sequence of selectors (primary + fallbacks) for a single field
+// Returns { value, selectorUsed } if found, or { value: "", selectorUsed: null } if not
+function tryFieldSelectors(fieldConfig, fieldKey, context = document) {
+  const isRowRelative =
+    fieldConfig.primary_selector?.startsWith("./") ||
+    fieldConfig.primary_selector?.startsWith(".//");
+  const contextRoot = getContextRoot(isRowRelative, context);
+
+  // Try primary selector first
+  if (fieldConfig.primary_selector) {
+    const selectorType = fieldConfig.selector_type || "xpath";
+    console.log(
+      `🔍 SessyNote: Trying primary ${selectorType} for ${fieldKey}:`,
+      fieldConfig.primary_selector
+    );
+
+    const result = evaluateSelector(
+      fieldConfig.primary_selector,
+      selectorType,
+      contextRoot
+    );
+    if (result.success) {
+      console.log(
+        `✅ SessyNote: Found ${fieldKey} via primary ${selectorType}:`,
+        result.value
+      );
+      return { value: result.value, selectorUsed: "primary" };
+    }
+  }
+
+  // Try fallback selectors in order
+  if (fieldConfig.selector_fallbacks && Array.isArray(fieldConfig.selector_fallbacks)) {
+    for (let i = 0; i < fieldConfig.selector_fallbacks.length; i++) {
+      const fallback = fieldConfig.selector_fallbacks[i];
+      const fallbackType = fallback.type || "xpath";
+      console.log(
+        `🔍 SessyNote: Trying fallback #${i + 1} (${fallbackType}) for ${fieldKey}:`,
+        fallback.selector
+      );
+
+      const result = evaluateSelector(
+        fallback.selector,
+        fallbackType,
+        contextRoot
+      );
+      if (result.success) {
+        console.log(
+          `✅ SessyNote: Found ${fieldKey} via fallback #${i + 1} (${fallbackType}):`,
+          result.value
+        );
+        return { value: result.value, selectorUsed: `fallback_${i + 1}` };
+      }
+    }
+  }
+
+  // All selectors failed for this field
+  console.warn(
+    `❌ SessyNote: No selectors matched for field ${fieldKey}. Skipping this field.`
+  );
+  return { value: "", selectorUsed: null };
+}
+
+function scrapePageData(xpathPatternsConfig, root = document) {
   const scrapedData = {};
+
+  // Handle both old format (direct field object) and new format (JSONB with fields array)
+  let fields = [];
+  if (Array.isArray(xpathPatternsConfig?.fields)) {
+    // New format: { fields: [...], is_popup: bool, popup_root_selector: string }
+    fields = xpathPatternsConfig.fields;
+  } else if (typeof xpathPatternsConfig === "object" && xpathPatternsConfig !== null) {
+    // Fallback: if it looks like old format, log a warning but try to process
+    console.warn(
+      "⚠️ SessyNote: Received xpath_patterns in unexpected format. Expected { fields: [...] }"
+    );
+    // If it's a direct field object, convert it to array format for compatibility
+    if (xpathPatternsConfig.field_key) {
+      fields = [xpathPatternsConfig];
+    } else {
+      console.warn(
+        "⚠️ SessyNote: No fields array found in json_response. Skipping scrape."
+      );
+      return scrapedData; // Can't process
+    }
+  }
+
   console.log(
     "🔍 SessyNote: Starting page scrape with",
-    Object.keys(responseFields).length,
-    "fields"
+    fields.length,
+    "field(s)"
   );
 
-  // Iterate through each field in the response
-  for (const [fieldName, fieldConfig] of Object.entries(responseFields)) {
+  // Iterate through each field in the new structure
+  for (const fieldConfig of fields) {
     try {
-      const source = fieldConfig.source;
-      if (!source) {
-        console.warn(`⚠️ SessyNote: No source config for field ${fieldName}`);
+      const fieldKey = fieldConfig.field_key;
+      const apiName = fieldConfig.api_name;
+      if (!fieldKey) {
+        console.warn(
+          "⚠️ SessyNote: Field config missing field_key. Skipping."
+        );
         continue;
       }
 
-      let value = "";
-      let element = null;
+      // Try primary selector, then fallbacks in order
+      const { value, selectorUsed } = tryFieldSelectors(
+        fieldConfig,
+        fieldKey,
+        root
+      );
 
-      // Handle XPath selectors
-      if (source.type === "xpath" && source.xpath) {
+      // Store the value using api_name (snake_case) as the storage key
+      if (value) {
+        const storageKey = apiName || fieldKey;
+        scrapedData[storageKey] = value;
         console.log(
-          `🔍 SessyNote: Using XPath for ${fieldName}:`,
-          source.xpath
+          `💾 SessyNote: Stored ${storageKey} (via ${selectorUsed}):`,
+          value
         );
-
-        const { node, value: xpathValue } = evaluateFieldXPath(
-          source.xpath,
-          root
+      } else {
+        console.warn(
+          `⚠️ SessyNote: No value found for field ${fieldKey} after trying all selectors`
         );
-
-        if (node && xpathValue) {
-          element = node;
-          value = xpathValue;
-          console.log(`✅ SessyNote: Found ${fieldName} via XPath:`, value);
-        } else {
-          console.warn(
-            `❌ SessyNote: XPath returned no value for ${fieldName}`
-          );
-        }
-      }
-      // Handle CSS selectors (fallback)
-      else if (source.selector) {
-        console.log(
-          `🔍 SessyNote: Using CSS selector for ${fieldName}:`,
-          source.selector
-        );
-        element = root.querySelector(source.selector);
-
-        if (element) {
-          const attribute = source.attribute || "textContent";
-
-          if (attribute === "textContent") {
-            value = element.textContent.trim();
-          } else if (attribute === "value") {
-            value = element.value;
-          } else {
-            value = element.getAttribute(attribute) || "";
-          }
-          console.log(`✅ SessyNote: Found ${fieldName} via CSS:`, value);
-        } else {
-          console.warn(
-            `❌ SessyNote: CSS selector returned no element for ${fieldName}`
-          );
-        }
-      }
-
-      // Store with api_name as key if value found
-      if (value && fieldConfig.api_name) {
-        scrapedData[fieldConfig.api_name] = value;
-        console.log(`💾 SessyNote: Stored ${fieldConfig.api_name}:`, value);
-      } else if (!value) {
-        console.warn(`⚠️ SessyNote: No value found for field ${fieldName}`);
       }
     } catch (error) {
-      console.error(`❌ SessyNote: Error scraping field ${fieldName}:`, error);
+      console.error(
+        `❌ SessyNote: Error scraping field ${fieldConfig.field_key || "unknown"}:`,
+        error
+      );
     }
   }
 
