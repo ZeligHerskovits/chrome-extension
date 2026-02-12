@@ -317,7 +317,7 @@ async function tryLateScrape() {
     "SessyNote: Detected DOM changes after initial check, trying late scrape (e.g. popup)..."
   );
 
-  // For popup types, only scrape when popup is visible AND we have row context
+  // For popup types, only scrape when popup is visible
   if (activeEmrConfig.isPopup) {
     const popup = getPopupRoot();
     if (!popup || !isElementVisible(popup)) {
@@ -326,14 +326,8 @@ async function tryLateScrape() {
       );
       return;
     }
-    if (!lastClickedSessionRow) {
-      console.log(
-        "SessyNote: ⏸️ Popup is visible but no row clicked yet. Waiting..."
-      );
-      return;
-    }
     console.log(
-      "SessyNote: ✅ Popup is visible AND row was clicked. Scraping popup + row data now."
+      "SessyNote: ✅ Popup is visible. Scraping popup data now."
     );
   }
 
@@ -607,13 +601,45 @@ function evaluateSelector(selector, selectorType, context = document) {
       );
       node = result.singleNodeValue;
       if (node) {
-        value = (node.textContent || "").trim();
+        // For INPUT, TEXTAREA, SELECT elements, use .value attribute
+        if (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA' || node.tagName === 'SELECT') {
+          value = (node.value || "").trim();
+        } else {
+          // For other elements, use textContent
+          value = (node.textContent || "").trim();
+        }
+        // 🐛 DEBUG: Log the element details
+        console.log(`🐛 XPath Debug:`, {
+          xpath: selector,
+          tagName: node.tagName,
+          className: node.className,
+          textContent: node.textContent?.trim().substring(0, 100),
+          valueAttr: node.value || '(no value attribute)',
+          extractedValue: value,
+          innerHTML: node.innerHTML?.substring(0, 150)
+        });
       }
     } else if (selectorType === "css") {
       // Evaluate CSS selector
       node = context.querySelector(selector);
       if (node) {
-        value = (node.textContent || "").trim();
+        // For INPUT, TEXTAREA, SELECT elements, use .value attribute
+        if (node.tagName === 'INPUT' || node.tagName === 'TEXTAREA' || node.tagName === 'SELECT') {
+          value = (node.value || "").trim();
+        } else {
+          // For other elements, use textContent
+          value = (node.textContent || "").trim();
+        }
+        // 🐛 DEBUG: Log the element details
+        console.log(`🐛 CSS Debug:`, {
+          selector: selector,
+          tagName: node.tagName,
+          className: node.className,
+          textContent: node.textContent?.trim().substring(0, 100),
+          valueAttr: node.value || '(no value attribute)',
+          extractedValue: value,
+          innerHTML: node.innerHTML?.substring(0, 150)
+        });
       }
     }
 

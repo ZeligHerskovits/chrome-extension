@@ -4936,15 +4936,15 @@ function normalizeFieldType(fieldType) {
   if (typeLower.includes("datetime") || typeLower.includes("timestamp")) {
     return "datetime";
   }
+  
+  // Date types (check before time to avoid matching "date" as "time")
+  if (typeLower.includes("date")) {
+    return "date";
+  }
 
   // Time types
   if (typeLower.includes("time")) {
     return "time";
-  }
-  
-  // Date types
-  if (typeLower.includes("date")) {
-    return "date";
   }
   
   // Boolean types
@@ -11364,6 +11364,15 @@ async function loadSessionDynamicFields(sessionData) {
           console.log("🔍 Using EMR field api_name as fieldName:", fieldName);
         }
         
+        // Fallback to result.key if no fieldName found
+        if (!fieldName) {
+          fieldName = result.key;
+          console.log("🔍 No mapping or EMR field found, using result.key as fieldName:", fieldName);
+        }
+        
+        // Ensure fieldName is always a string (safety check)
+        fieldName = String(fieldName || result.key || "");
+        
         // console.log("🔍 Final fieldName (api_name):", fieldName);
         // console.log("🔍 Label to display:", result.key);
 
@@ -11473,6 +11482,7 @@ async function loadSessionDynamicFields(sessionData) {
           console.log("🔍 Creating time input");
           input = document.createElement("input");
           input.type = "time";
+        } else if (fieldType === "boolean") {
           console.log("🔍 Creating checkbox input for boolean field");
           input = document.createElement("input");
           input.type = "checkbox";
@@ -14383,11 +14393,16 @@ function createEditableFieldElement(
 
   // Force time/date types based on label to avoid checkbox rendering
   const normalizedLabel = normalizeFieldKey(fieldName);
-  if (normalizedLabel.includes("time")) {
-    fieldType = "time";
+  // Check for datetime first (contains both date and time), then date, then time
+  if (normalizedLabel.includes("datetime")) {
+    fieldType = "datetime";
   } else if (normalizedLabel.includes("date")) {
     fieldType = "date";
+  } else if (normalizedLabel.includes("time")) {
+    fieldType = "time";
   }
+  
+  console.log(`🔧 Field type detection: "${fieldName}" -> type: "${fieldType}"`)
 
   // Format field name (convert snake_case to Title Case)
   const formattedName = fieldName
