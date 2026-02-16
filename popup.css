@@ -776,6 +776,62 @@ body {
   justify-content: center;
 }
 
+/* Save Session Prompt Modal */
+.save-session-modal {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.save-session-modal.hidden {
+  display: none;
+}
+
+.save-session-modal:not(.hidden) {
+  display: flex;
+}
+
+.save-session-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.save-session-card {
+  position: relative;
+  background: #fff;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 320px;
+  padding: 20px 18px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  z-index: 1;
+}
+
+.save-session-header {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.save-session-body {
+  font-size: 14px;
+  color: #4b5563;
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.save-session-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
 .btn-secondary {
   background-color: #f3f4f6;
   color: #374151;

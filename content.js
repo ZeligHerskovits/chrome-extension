@@ -174,12 +174,6 @@
         toggleBtn.style.backgroundColor = "white";
       }
       toggleBtn.title = "Toggle SessyNote";
-    } else if (message.action === "checkAndScrape") {
-      // Trigger the scraping flow (called after login)
-      console.log(
-        "SessyNote: Received checkAndScrape message - triggering scrape"
-      );
-      checkAndScrapeIfMatch();
     }
   });
 
@@ -213,17 +207,58 @@
 })();
 
 // ===============================
+// MESSAGE LISTENER FOR CHECKAND SCRAPE (OUTSIDE TOGGLE BUTTON CODE)
+// This listener works even if user wasn't logged in when page loaded
+// ===============================
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  console.log("========================================");
+  console.log("SessyNote: 📨 Message received at:", new Date().toISOString());
+  console.log("SessyNote: Message action:", message.action);
+  console.log("SessyNote: Current sessionAlreadyScraped:", sessionAlreadyScraped);
+  console.log("========================================");
+  
+  if (message.action === "checkAndScrape") {
+    console.log(
+      "SessyNote: ✅ Received checkAndScrape message - will trigger fresh scrape"
+    );
+    
+    // Reset the flag to allow re-scraping when user manually opens popup
+    const oldValue = sessionAlreadyScraped;
+    sessionAlreadyScraped = false;
+    console.log("SessyNote: 🔄 Reset sessionAlreadyScraped from", oldValue, "to", sessionAlreadyScraped);
+    
+    // Wait a bit longer to ensure the function is defined
+    setTimeout(() => {
+      console.log("SessyNote: Attempting to call checkAndScrapeIfMatch...");
+      if (typeof checkAndScrapeIfMatch === "function") {
+        console.log("SessyNote: ✅ Function found, calling now...");
+        checkAndScrapeIfMatch();
+      } else {
+        console.error(
+          "SessyNote: ❌ checkAndScrapeIfMatch function not yet defined"
+        );
+      }
+    }, 500);
+    
+    return true; // Keep message channel open
+  }
+});
+
+// ===============================
 // AUTO-SCRAPING AND SESSION AUTO-FILL
 // ===============================
 
 // Check URL on page load and navigation
 // Track the currently matched EMR config so we can reuse it (e.g. for popups)
 let activeEmrConfig = null; // { emrTypeId, emrResponse }
+let popupCandidates = []; // [{ emrTypeId, emrResponse, emrType, isPopup, popupRootSelector }]
+let popupCandidateIndex = 0;
 
 // Track popup / late-content scraping state
 let lateContentObserver = null;
 let lateScrapeScheduled = false;
 let sessionAlreadyScraped = false;
+let popupWasVisible = false;
 
 // Track the last clicked table row (used when a session popup is opened).
 // This lets us evaluate XPath for row-based fields (like Date of Session,
@@ -309,26 +344,96 @@ function getScrapeRoot() {
 
 // Try scraping again after new content appears (e.g. popup opened)
 async function tryLateScrape() {
-  if (!activeEmrConfig || sessionAlreadyScraped) {
+  if (!activeEmrConfig) {
     return;
   }
 
   console.log(
-    "SessyNote: Detected DOM changes after initial check, trying late scrape (e.g. popup)..."
+    "SessyNote: Detected DOM changes, checking if popup is visible..."
   );
 
   // For popup types, only scrape when popup is visible
   if (activeEmrConfig.isPopup) {
     const popup = getPopupRoot();
-    if (!popup || !isElementVisible(popup)) {
+    const isVisible = !!popup && isElementVisible(popup);
+
+    // Detect popup close event
+    if (!isVisible) {
+      if (popupWasVisible) {
+        console.log("SessyNote: 🔔 Popup closed detected");
+        if (sessionAlreadyScraped) {
+          notifySaveSessionPrompt("popup-closed");
+        }
+        sessionAlreadyScraped = false;
+        popupWasVisible = false;
+      }
+
       console.log(
-        "SessyNote: ⏸️ Popup not visible yet. Waiting for popup to open..."
+        "SessyNote: ⏸️ Popup not visible. Waiting for popup to open..."
       );
       return;
     }
+
+    // Popup is visible
+    if (!popupWasVisible) {
+      popupWasVisible = true;
+    }
+
+    // Popup is visible - check if we already scraped THIS popup
+    if (sessionAlreadyScraped) {
+      console.log("SessyNote: ⏭️ Already scraped current popup, skipping");
+      return;
+    }
+
     console.log(
-      "SessyNote: ✅ Popup is visible. Scraping popup data now."
+      "SessyNote: ✅ Popup is visible and not yet scraped. Trying candidates..."
     );
+
+    const minFields = 6;
+    const candidates = popupCandidates.length
+      ? popupCandidates
+      : [activeEmrConfig];
+
+    for (let i = popupCandidateIndex; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      activeEmrConfig = candidate;
+      popupCandidateIndex = i;
+
+      const root = getScrapeRoot();
+      const scrapedData = scrapePageData(candidate.emrResponse, root);
+      const foundValuesCount = Object.keys(scrapedData).length;
+
+      console.log(
+        `SessyNote: Popup candidate ${candidate.emrTypeId} found ${foundValuesCount} value(s)`
+      );
+
+      if (foundValuesCount >= minFields) {
+        console.log(
+          `SessyNote: ✅ Popup candidate ${candidate.emrTypeId} matched. Proceeding...`
+        );
+        sessionAlreadyScraped = true;
+
+        chrome.runtime.sendMessage({
+          action: "autoFillSession",
+          data: {
+            scrapedData: scrapedData,
+            emrTypeId: candidate.emrTypeId,
+          },
+        });
+        return;
+      }
+
+      console.log(
+        `SessyNote: ❌ Popup candidate ${candidate.emrTypeId} insufficient. Trying next...`
+      );
+      popupCandidateIndex = i + 1;
+    }
+
+    console.log("SessyNote: ❌ No popup candidates produced enough values.");
+    return;
+  } else if (sessionAlreadyScraped) {
+    // Non-popup types - respect the flag
+    return;
   }
 
   const root = getScrapeRoot();
@@ -336,8 +441,8 @@ async function tryLateScrape() {
   console.log("SessyNote: Late-scrape data:", scrapedData);
 
   const foundValuesCount = Object.keys(scrapedData).length;
-  // Require at least 5 values to consider this a valid session (same as non-popup)
-  const minFields = 5;
+  // Require at least 6 values to consider this a valid session (same as non-popup)
+  const minFields = 6;
   if (foundValuesCount < minFields) {
     console.log(
       `SessyNote: Late scrape only found ${foundValuesCount} value(s). Need at least ${minFields}. Waiting for more content...`
@@ -350,7 +455,8 @@ async function tryLateScrape() {
   );
 
   sessionAlreadyScraped = true;
-  stopLateContentObserver();
+  // DON'T stop observer - keep watching for popup close/open cycles
+  // stopLateContentObserver();
 
   chrome.runtime.sendMessage({
     action: "autoFillSession",
@@ -367,22 +473,18 @@ function ensureLateContentObserver() {
   if (
     !activeEmrConfig ||
     !activeEmrConfig.isPopup ||
-    lateContentObserver ||
-    sessionAlreadyScraped
+    lateContentObserver
   ) {
     return;
   }
 
   console.log(
-    "SessyNote: Starting DOM observer to watch for late content (e.g. popup session)..."
+    "SessyNote: Starting DOM observer to watch for popup open/close cycles..."
   );
 
   lateContentObserver = new MutationObserver(() => {
-    if (sessionAlreadyScraped) {
-      stopLateContentObserver();
-      return;
-    }
-
+    // Always check - don't stop when scraped, so we can detect popup close/open
+    
     // Debounce multiple rapid mutations
     if (lateScrapeScheduled) return;
     lateScrapeScheduled = true;
@@ -403,110 +505,118 @@ function ensureLateContentObserver() {
 async function checkAndScrapeIfMatch() {
   try {
     const currentUrl = window.location.href;
-    console.log("SessyNote: Checking URL against all pairs:", currentUrl);
+    console.log("SessyNote: 🔍 checkAndScrapeIfMatch called");
+    console.log("SessyNote: 🌐 Checking URL against all pairs:", currentUrl);
 
     // Ask background script to check URL against all pairs
+    console.log("SessyNote: 📤 Sending checkUrlAgainstAllPairs message to background...");
     chrome.runtime.sendMessage(
       { action: "checkUrlAgainstAllPairs", currentUrl: currentUrl },
       async (response) => {
+        console.log("SessyNote: 📥 Received response from background:", response);
+        
         if (!response || !response.success) {
           console.error(
-            "SessyNote: Failed to check URL against pairs:",
+            "SessyNote: ❌ Failed to check URL against pairs:",
             response?.error
           );
           return;
         }
 
-        if (!response.matched) {
-          console.log("SessyNote: No URL match found in any pair, skipping");
+        if (!response.matched || !Array.isArray(response.matches)) {
+          console.log("SessyNote: ❌ No URL match found in any pair, skipping");
           return;
         }
-
-        // Match found! Use the matched EMR type
-        const emrTypeId = response.emrTypeId;
-        const emrResponse = response.emrResponse;
-        const emrType = response.emrType || {};
 
         console.log(
-          "SessyNote: ✅ URL match found! Using EMR Type ID:",
-          emrTypeId
+          "SessyNote: ✅ URL match found! Candidates:",
+          response.matches.length
         );
 
-        if (!emrResponse) {
-          console.error("SessyNote: No response field in EMR type");
+        const matches = response.matches
+          .map((match) => {
+            const emrType = match.emrType || {};
+            const emrResponse = match.emrResponse || null;
+            return {
+              emrTypeId: match.emrTypeId,
+              emrResponse,
+              emrType,
+              isPopup: !!emrType.is_popup || !!emrResponse?.is_popup,
+              popupRootSelector:
+                emrType.popup_root_selector ||
+                emrResponse?.popup_root_selector ||
+                null,
+            };
+          })
+          .filter((m) => !!m.emrResponse);
+
+        if (!matches.length) {
+          console.log("SessyNote: ❌ No usable EMR responses found");
           return;
         }
 
-        // Cache active EMR config so we can reuse it if more content (like a popup) appears later
-        activeEmrConfig = {
-          emrTypeId,
-          emrResponse,
-          // Popup metadata comes from backend EMR type definition,
-          // but fall back to json_response if present there.
-          isPopup: !!emrType.is_popup || !!emrResponse?.is_popup,
-          popupRootSelector:
-            emrType.popup_root_selector ||
-            emrResponse?.popup_root_selector ||
-            null,
-        };
+        // Try non-popup candidates first (immediate scrape)
+        const nonPopupCandidates = matches.filter((m) => !m.isPopup);
+        for (const candidate of nonPopupCandidates) {
+          activeEmrConfig = candidate;
+          sessionAlreadyScraped = false;
+
+          console.log(
+            "SessyNote: 🔍 Trying non-popup EMR candidate:",
+            candidate.emrTypeId
+          );
+
+          // Wait for page to fully load (non-popup)
+          await new Promise((resolve) => setTimeout(resolve, 10000));
+
+          const root = getScrapeRoot();
+          const scrapedData = scrapePageData(candidate.emrResponse, root);
+
+          const foundValuesCount = Object.keys(scrapedData).length;
+          const minFields = 6;
+          if (foundValuesCount >= minFields) {
+            console.log(
+              `SessyNote: ✅ Non-popup candidate matched with ${foundValuesCount} values. Using EMR Type ${candidate.emrTypeId}`
+            );
+
+            sessionAlreadyScraped = true;
+
+            chrome.runtime.sendMessage({
+              action: "autoFillSession",
+              data: {
+                scrapedData: scrapedData,
+                emrTypeId: candidate.emrTypeId,
+              },
+            });
+            return;
+          }
+
+          console.log(
+            `SessyNote: ❌ Candidate ${candidate.emrTypeId} only found ${foundValuesCount} values. Trying next...`
+          );
+        }
+
+        // If no non-popup candidate worked, try popup candidates
+        const popupOnlyCandidates = matches.filter((m) => m.isPopup);
+        if (!popupOnlyCandidates.length) {
+          console.log("SessyNote: ❌ No popup candidates available. Giving up.");
+          return;
+        }
+
+        popupCandidates = popupOnlyCandidates;
+        popupCandidateIndex = 0;
+        activeEmrConfig = popupCandidates[0];
         sessionAlreadyScraped = false;
-
-        console.log("SessyNote: ⚙️ EMR Type Configuration:", {
-          emrTypeId,
-          isPopup: activeEmrConfig.isPopup,
-          popupRootSelector: activeEmrConfig.popupRootSelector,
-          emrType_is_popup: emrType.is_popup,
-          emrResponse_is_popup: emrResponse?.is_popup,
-          fieldCount: Array.isArray(emrResponse?.fields)
-            ? emrResponse.fields.length
-            : 0,
-        });
-
-        // For popup EMR types, skip initial scrape and only watch for popup to appear
-        if (activeEmrConfig.isPopup) {
-          console.log(
-            "SessyNote: 🔍 Popup-based EMR type detected. Starting observer to watch for popup..."
-          );
-          ensureLateContentObserver();
-          return; // DON'T scrape - wait for popup to appear
-        }
-        
-        console.log("SessyNote: 📄 Non-popup EMR type. Waiting 10 seconds then scraping...");
-
-        // Wait for QuickBase page to fully load (takes longer due to dynamic content)
-        // Only for NON-popup types
-        await new Promise((resolve) => setTimeout(resolve, 10000));
-
-        // Scrape data from page (non-popup types only)
-        const root = getScrapeRoot();
-        const scrapedData = scrapePageData(emrResponse, root);
-
-        console.log("SessyNote: Scraped data:", scrapedData);
-
-        // Check if enough values were found
-        const foundValuesCount = Object.keys(scrapedData).length;
-        const minFields = 5;
-        if (foundValuesCount < minFields) {
-          console.log(
-            `SessyNote: Only found ${foundValuesCount} value(s). Need at least ${minFields} to consider this a session page.`
-          );
-          return;
-        }
+        popupWasVisible = false;
 
         console.log(
-          `SessyNote: Found ${foundValuesCount} values - this appears to be a session page. Proceeding...`
+          "SessyNote: 🔍 Popup-based EMR candidates found. Watching for popup...",
+          popupCandidates.map((c) => c.emrTypeId)
         );
 
-        sessionAlreadyScraped = true;
+        ensureLateContentObserver();
+        return;
 
-        // Send to background script
-        chrome.runtime.sendMessage({
-          action: "autoFillSession",
-          data: {
-            scrapedData: scrapedData,
-            emrTypeId: emrTypeId,
-          },
-        });
       }
     );
   } catch (error) {
@@ -528,9 +638,17 @@ async function checkAndScrapeIfMatch() {
       lastUrl = window.location.href;
       console.log("SessyNote: URL changed to", lastUrl);
 
+      // If leaving a non-popup session page, prompt to save
+      if (activeEmrConfig && !activeEmrConfig.isPopup && sessionAlreadyScraped) {
+        notifySaveSessionPrompt("url-changed");
+      }
+
       // Reset state for the new URL
       activeEmrConfig = null;
+      popupCandidates = [];
+      popupCandidateIndex = 0;
       sessionAlreadyScraped = false;
+      popupWasVisible = false;
       stopLateContentObserver();
 
       await checkAndScrapeIfMatch();
@@ -582,6 +700,27 @@ function getContextRoot(isRowRelative, defaultRoot = document) {
     }
     return defaultRoot || document;
   }
+}
+
+function notifySaveSessionPrompt(reason) {
+  try {
+    chrome.storage.local.set({
+      pendingSavePrompt: true,
+      pendingSavePromptReason: reason,
+      pendingSavePromptAt: Date.now(),
+    });
+  } catch (e) {
+    console.error("SessyNote: Failed to set pending save prompt:", e);
+  }
+
+  chrome.runtime.sendMessage({ action: "showSavePrompt", reason }, () => {
+    if (chrome.runtime.lastError) {
+      // Side panel may be closed - pending flag will show prompt later
+      console.log(
+        "SessyNote: Save prompt message not delivered (panel likely closed)"
+      );
+    }
+  });
 }
 
 // Evaluate a single selector (XPath or CSS) and return the extracted value

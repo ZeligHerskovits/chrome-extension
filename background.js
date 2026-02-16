@@ -174,23 +174,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle check URL against all EMR type pairs
   if (message.action === "checkUrlAgainstAllPairs") {
     console.log(
-      "SessyNote: Checking URL against all pairs:",
+      "SessyNote Background: 📥 Received checkUrlAgainstAllPairs request"
+    );
+    console.log(
+      "SessyNote Background: 🌐 Checking URL:",
       message.currentUrl
     );
 
     chrome.storage.local.get(["accessToken"], async (tokenResult) => {
       if (!tokenResult.accessToken) {
+        console.log("SessyNote Background: ❌ No access token found");
         sendResponse({ success: false, error: "No access token" });
         return;
       }
+
+      console.log("SessyNote Background: ✅ Access token found");
 
       try {
         const currentDomain = new URL(message.currentUrl).hostname;
         // Normalize domain by removing www. prefix for comparison
         const normalizedCurrentDomain = currentDomain.replace(/^www\./, '');
-        console.log("SessyNote: Current domain:", currentDomain, "-> normalized:", normalizedCurrentDomain);
+        console.log("SessyNote Background: 📍 Current domain:", currentDomain);
+        console.log("SessyNote Background: 📍 Normalized domain:", normalizedCurrentDomain);
 
         // Step 1: Fetch user profile
+        console.log("SessyNote Background: 📤 Fetching user profile...");
         const profileResponse = await fetch(`${API_BASE_URL}/me`, {
           method: "GET",
           headers: {
@@ -200,27 +208,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
 
         if (!profileResponse.ok) {
+          console.error("SessyNote Background: ❌ Failed to fetch profile:", profileResponse.status);
           throw new Error(`Failed to fetch profile: ${profileResponse.status}`);
         }
 
         const profileData = await profileResponse.json();
         const pairs = profileData.emr_type_documentation_pairs || [];
 
+        console.log("SessyNote Background: 📋 Found", pairs.length, "EMR pair(s)");
+
         if (pairs.length === 0) {
-          console.log("SessyNote: No EMR type pairs found in profile");
+          console.log("SessyNote Background: ⚠️ No EMR type pairs found in profile");
           sendResponse({ success: false, error: "No EMR type pairs found" });
           return;
         }
 
         console.log(
-          `SessyNote: Found ${pairs.length} pair(s), checking each...`
+          `SessyNote Background: 🔍 Checking ${pairs.length} pair(s) against URL...`
         );
 
         // Step 2: Loop through all pairs and check URL match
+        const matchedConfigs = [];
         for (const pair of pairs) {
           const emrTypeId = pair.emr_type_id;
           console.log(
-            `SessyNote: Checking pair with EMR Type ID: ${emrTypeId}`
+            `SessyNote Background: 🔎 Checking pair with EMR Type ID: ${emrTypeId}`
           );
 
           // Fetch EMR type details
@@ -237,7 +249,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           if (!emrTypeResponse.ok) {
             console.warn(
-              `SessyNote: Failed to fetch EMR type ${emrTypeId}, skipping`
+              `SessyNote Background: ⚠️ Failed to fetch EMR type ${emrTypeId}, skipping`
             );
             continue;
           }
@@ -247,12 +259,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // Normalize EMR URL by removing www. prefix for comparison
           const normalizedEmrUrl = emrUrl.replace(/^www\./, '');
 
-          console.log(`SessyNote: EMR Type ${emrTypeId} URL: ${emrUrl} -> normalized: ${normalizedEmrUrl}`);
+          console.log(`SessyNote Background: 🔗 EMR Type ${emrTypeId} URL:`, emrUrl);
+          console.log(`SessyNote Background: 🔗 Normalized:`, normalizedEmrUrl);
+          console.log(`SessyNote Background: ⚖️ Comparing "${normalizedCurrentDomain}" === "${normalizedEmrUrl}"`);
 
           // Check if URL matches (compare normalized versions)
           if (normalizedCurrentDomain === normalizedEmrUrl) {
             console.log(
-              `SessyNote: ✅ URL match found! Using EMR Type ID: ${emrTypeId}`
+              `SessyNote Background: ✅ URL match for EMR Type ID: ${emrTypeId}`
             );
 
             // Parse json_response field if it's a JSON string
@@ -268,29 +282,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
               }
             }
 
-            sendResponse({
-              success: true,
-              matched: true,
+            matchedConfigs.push({
               emrTypeId: emrTypeId,
               emrType: emrTypeData,
               emrResponse: emrResponse,
             });
-            return;
           } else {
             console.log(
-              `SessyNote: ❌ No match for EMR Type ${emrTypeId}, continuing...`
+              `SessyNote Background: ❌ No match for EMR Type ${emrTypeId}, continuing...`
             );
           }
         }
 
+        if (matchedConfigs.length > 0) {
+          console.log(
+            "SessyNote Background: 📤 Sending matched configs:",
+            matchedConfigs.map((m) => m.emrTypeId)
+          );
+          sendResponse({
+            success: true,
+            matched: true,
+            matches: matchedConfigs,
+          });
+          return;
+        }
+
         // No match found
-        console.log("SessyNote: No URL match found in any pair");
+        console.log("SessyNote Background: ❌ No URL match found in any pair");
         sendResponse({
           success: true,
           matched: false,
         });
       } catch (error) {
-        console.error("SessyNote: Error checking URL against pairs:", error);
+        console.error("SessyNote Background: ❌ Error checking URL against pairs:", error);
         sendResponse({ success: false, error: error.message });
       }
     });

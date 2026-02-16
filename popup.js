@@ -3,7 +3,9 @@
 // Auto-detected session page support
 
 document.addEventListener("DOMContentLoaded", function () {
-  console.log("🚀 Fast popup script loaded");
+  console.log("========================================");
+  console.log("🚀 Popup DOMContentLoaded fired at:", new Date().toISOString());
+  console.log("========================================");
 
   // Check if user is logged in
   checkLoginStatus();
@@ -16,13 +18,58 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Setup inactivity timeout
   setupInactivityTimeout();
+  
+  // Setup tab change listener for side panel
+  setupTabChangeListener();
+
+  // Setup save session prompt handlers
+  setupSaveSessionPromptHandlers();
 });
 
+// Listen for tab changes - triggers scraping when user switches tabs with side panel open
+function setupTabChangeListener() {
+  console.log("🔧 Setting up tab change listener for side panel...");
+  
+  chrome.tabs.onActivated.addListener(function(activeInfo) {
+    console.log("========================================");
+    console.log("🔄 Tab changed at:", new Date().toISOString());
+    console.log("🔄 New active tab ID:", activeInfo.tabId);
+    console.log("========================================");
+    
+    // Check if logged in before triggering scrape
+    chrome.storage.local.get(["isLoggedIn"], async function (result) {
+      if (result.isLoggedIn) {
+        console.log("✅ User is logged in - triggering scrape on new tab");
+        
+        // Get the active tab details
+        chrome.tabs.get(activeInfo.tabId, async function(tab) {
+          console.log("📍 New tab URL:", tab.url);
+          
+          try {
+            await chrome.tabs.sendMessage(tab.id, { action: "checkAndScrape" });
+            console.log("✅ Successfully sent checkAndScrape to new tab");
+          } catch (error) {
+            console.log("ℹ️ Content script not available on new tab:", error.message);
+          }
+        });
+      } else {
+        console.log("❌ User not logged in - skipping scrape");
+      }
+    });
+  });
+  
+  console.log("✅ Tab change listener set up successfully");
+}
+
 function checkLoginStatus() {
+  console.log("🔐 checkLoginStatus() called");
   chrome.storage.local.get(["isLoggedIn"], function (result) {
+    console.log("🔐 Login status from storage:", result.isLoggedIn);
     if (result.isLoggedIn) {
+      console.log("✅ User is logged in - calling showMainPage()");
       showMainPage();
     } else {
+      console.log("❌ User is NOT logged in - calling showLoginPage()");
       showLoginPage();
     }
   });
@@ -31,6 +78,27 @@ function checkLoginStatus() {
 function showMainPage() {
   document.getElementById("login-page").style.display = "none";
   document.getElementById("main-page").style.display = "block";
+
+  // Trigger scraping on current page every time popup opens
+  console.log("🔄 Popup opened (showMainPage called) - triggering scrape on current page...");
+  console.log("🕐 Timestamp:", new Date().toISOString());
+  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+    console.log("📋 Tabs query result:", tabs);
+    if (tabs[0]) {
+      console.log("📍 Current tab URL:", tabs[0].url);
+      console.log("📍 Current tab ID:", tabs[0].id);
+      try {
+        console.log("📤 About to send checkAndScrape message...");
+        await chrome.tabs.sendMessage(tabs[0].id, { action: "checkAndScrape" });
+        console.log("✅ Successfully sent checkAndScrape message to current tab");
+      } catch (error) {
+        console.error("❌ Error sending message:", error);
+        console.log("ℹ️ Content script not available (might not be EMR page)");
+      }
+    } else {
+      console.log("⚠️ No active tab found in query result");
+    }
+  });
 
   // Check for pending session data from auto-scraping
   chrome.storage.local.get(
@@ -67,11 +135,99 @@ function showMainPage() {
       }, 100);
     }
   );
+
+  // Check for pending save prompt (e.g. popup closed while panel was closed)
+  setTimeout(() => {
+    checkPendingSavePrompt();
+  }, 300);
 }
 
 function showLoginPage() {
   document.getElementById("login-page").style.display = "block";
   document.getElementById("main-page").style.display = "none";
+}
+
+let saveSessionPromptOpen = false;
+
+function setupSaveSessionPromptHandlers() {
+  const yesBtn = document.getElementById("save-session-yes");
+  const noBtn = document.getElementById("save-session-no");
+
+  if (!yesBtn || !noBtn) {
+    console.warn("⚠️ Save session prompt buttons not found");
+    return;
+  }
+
+  yesBtn.addEventListener("click", async () => {
+    await handleSaveSessionPromptYes();
+  });
+
+  noBtn.addEventListener("click", async () => {
+    await handleSaveSessionPromptNo();
+  });
+}
+
+function showSaveSessionPrompt(reason) {
+  const modal = document.getElementById("save-session-modal");
+  if (!modal || saveSessionPromptOpen) {
+    return;
+  }
+
+  console.log("🟡 Showing save session prompt. Reason:", reason);
+  saveSessionPromptOpen = true;
+  modal.classList.remove("hidden");
+}
+
+function hideSaveSessionPrompt() {
+  const modal = document.getElementById("save-session-modal");
+  if (!modal) return;
+  modal.classList.add("hidden");
+  saveSessionPromptOpen = false;
+}
+
+async function clearPendingSavePrompt() {
+  await chrome.storage.local.remove([
+    "pendingSavePrompt",
+    "pendingSavePromptReason",
+    "pendingSavePromptAt",
+  ]);
+}
+
+async function checkPendingSavePrompt() {
+  const result = await chrome.storage.local.get([
+    "pendingSavePrompt",
+    "pendingSavePromptReason",
+  ]);
+  if (result.pendingSavePrompt) {
+    showSaveSessionPrompt(result.pendingSavePromptReason || "unknown");
+  }
+}
+
+async function handleSaveSessionPromptYes() {
+  const yesBtn = document.getElementById("save-session-yes");
+  const noBtn = document.getElementById("save-session-no");
+  if (yesBtn) yesBtn.disabled = true;
+  if (noBtn) noBtn.disabled = true;
+
+  try {
+    await saveDetectedSessionWithoutAINotes();
+    showSuccessMessage("Session saved successfully!");
+  } catch (error) {
+    console.error("❌ Failed to save session from prompt:", error);
+    showErrorMessage("Failed to save session. Redirecting to Clients.");
+  } finally {
+    await clearPendingSavePrompt();
+    hideSaveSessionPrompt();
+    navigateToPage("clients");
+    if (yesBtn) yesBtn.disabled = false;
+    if (noBtn) noBtn.disabled = false;
+  }
+}
+
+async function handleSaveSessionPromptNo() {
+  await clearPendingSavePrompt();
+  hideSaveSessionPrompt();
+  navigateToPage("clients");
 }
 
 // API Configuration - Your actual server URL
@@ -593,9 +749,24 @@ async function handleSuccessfulLogin(accessToken, email) {
   await fetchAndCacheEMRUrl(accessToken);
 
   // After login, trigger the scraping flow on the current page (if on EMR domain)
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  console.log("🔄 Attempting to send checkAndScrape message to current tab...");
+  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
     if (tabs[0]) {
-      chrome.tabs.sendMessage(tabs[0].id, { action: "checkAndScrape" });
+      console.log("📍 Current tab URL:", tabs[0].url);
+      console.log("📍 Tab ID:", tabs[0].id);
+      
+      try {
+        // Send message to content script to check and scrape
+        console.log("📤 Sending checkAndScrape message...");
+        await chrome.tabs.sendMessage(tabs[0].id, { action: "checkAndScrape" });
+        console.log("✅ Successfully sent checkAndScrape message to content script");
+      } catch (error) {
+        // Content script might not be injected yet - this is normal for non-EMR pages
+        console.error("❌ Failed to send message to content script:", error);
+        console.log("ℹ️ Content script not available on current page (might not be an EMR page or page needs refresh)");
+      }
+    } else {
+      console.log("⚠️ No active tab found");
     }
   });
 
@@ -10194,6 +10365,167 @@ async function findOrCreateSession(
   }
 }
 
+async function saveDetectedSessionWithoutAINotes() {
+  console.log("💾 Saving detected session without AI notes...");
+
+  const tokenResult = await chrome.storage.local.get(["accessToken"]);
+  if (!tokenResult.accessToken) {
+    showErrorMessage("Please log in again");
+    throw new Error("No access token");
+  }
+
+  if (!currentAutoDetectedScrapedData || !currentAutoDetectedDynamicFields) {
+    showErrorMessage("No detected session data found");
+    throw new Error("Missing detected session data");
+  }
+
+  const scrapedData = currentAutoDetectedScrapedData;
+  const clientName = scrapedData.Client || scrapedData.client;
+  if (!clientName) {
+    showErrorMessage("Client name not found");
+    throw new Error("Client name not found");
+  }
+
+  const clientId = await findOrCreateClient(
+    clientName,
+    tokenResult.accessToken
+  );
+
+  const emrTypeId = currentAutoDetectedEmrTypeId;
+  if (!emrTypeId) {
+    showErrorMessage("EMR Type not found");
+    throw new Error("EMR Type not found");
+  }
+
+  // Collect current values from DOM (including manual fields and modality/steps)
+  const updatedScrapedData = { ...scrapedData };
+
+  const manualContainer = document.getElementById(
+    "auto-manual-fields-container"
+  );
+  if (manualContainer) {
+    const manualFields = manualContainer.querySelectorAll(
+      ".session-detail-item"
+    );
+    manualFields.forEach((fieldElement) => {
+      const label = fieldElement.querySelector(".detail-label");
+      const input = fieldElement.querySelector("input, textarea, select");
+
+      if (label && input) {
+        const fieldName = label.textContent.trim();
+        const apiName = input.getAttribute("data-api-name");
+
+        if (apiName) {
+          let newValue = "";
+          if (input.type === "checkbox") {
+            newValue = input.checked;
+          } else if (input.tagName === "SELECT") {
+            newValue = input.value;
+          } else {
+            newValue = input.value || "";
+          }
+          updatedScrapedData[apiName] = newValue;
+        } else {
+          if (fieldName === "Modality") {
+            updatedScrapedData.modality = input.value || null;
+          } else if (fieldName === "Modality Steps") {
+            updatedScrapedData.modality_step = input.value || null;
+          } else if (fieldName === "Activity") {
+            updatedScrapedData.activity = input.value || null;
+          } else if (fieldName === "Sub-Activities") {
+            updatedScrapedData.sub_activity = input.value || null;
+          }
+        }
+      }
+    });
+  }
+
+  const sessionData = {
+    client_id: clientId,
+    emr_type_id: emrTypeId,
+    manual_instructions:
+      updatedScrapedData.Instructions ||
+      updatedScrapedData.instructions ||
+      "",
+  };
+
+  Object.keys(updatedScrapedData).forEach((key) => {
+    if (
+      ![
+        "Client",
+        "client",
+        "emr_type_id",
+        "Instructions",
+        "instructions",
+      ].includes(key)
+    ) {
+      if (
+        key === "modality" ||
+        key === "modality_step" ||
+        key === "activity" ||
+        key === "sub_activity"
+      ) {
+        sessionData[key] = updatedScrapedData[key] || null;
+      } else {
+        sessionData[key] = updatedScrapedData[key];
+      }
+    }
+  });
+
+  const sessionId = await findOrCreateSession(
+    clientId,
+    emrTypeId,
+    sessionData,
+    tokenResult.accessToken
+  );
+
+  const sessionResponse = await fetch(
+    `${API_BASE_URL}/sessions/${sessionId}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${tokenResult.accessToken}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+
+  if (sessionResponse.status === 401) {
+    handle401Error();
+    throw new Error("Unauthorized");
+  }
+
+  if (!sessionResponse.ok) {
+    throw new Error("Failed to fetch session");
+  }
+
+  const sessionDetails = await sessionResponse.json();
+  chrome.storage.local.set({ currentSession: sessionDetails });
+
+  if (sessionDetails.client_id) {
+    try {
+      const clientResponse = await fetch(
+        `${API_BASE_URL}/api/Clients/${sessionDetails.client_id}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${tokenResult.accessToken}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      if (clientResponse.ok) {
+        const client = await clientResponse.json();
+        chrome.storage.local.set({ currentClient: client });
+      }
+    } catch (error) {
+      console.error("❌ Error fetching client:", error);
+    }
+  }
+
+  return sessionDetails;
+}
+
 // Main handler for Generate AI Notes from detected session
 async function handleGenerateAINotesFromDetected() {
   console.log("🚀 Function called!");
@@ -13742,6 +14074,12 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       console.error("❌ SessyNote POPUP: Error auto-filling session:", error);
       sendResponse({ success: false, error: error.message });
     }
+  }
+
+  if (message.action === "showSavePrompt") {
+    console.log("✅ SessyNote POPUP: Received showSavePrompt", message.reason);
+    showSaveSessionPrompt(message.reason || "unknown");
+    sendResponse({ success: true });
   }
   return true;
 });
