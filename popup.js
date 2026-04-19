@@ -18,47 +18,14 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Setup inactivity timeout
   setupInactivityTimeout();
-  
-  // Setup tab change listener for side panel
-  setupTabChangeListener();
 
   // Setup save session prompt handlers
   setupSaveSessionPromptHandlers();
 });
 
-// Listen for tab changes - triggers scraping when user switches tabs with side panel open
+// Tab change listener kept as a no-op in manual detection mode
 function setupTabChangeListener() {
-  console.log("🔧 Setting up tab change listener for side panel...");
-  
-  chrome.tabs.onActivated.addListener(function(activeInfo) {
-    console.log("========================================");
-    console.log("🔄 Tab changed at:", new Date().toISOString());
-    console.log("🔄 New active tab ID:", activeInfo.tabId);
-    console.log("========================================");
-    
-    // Check if logged in before triggering scrape
-    chrome.storage.local.get(["isLoggedIn"], async function (result) {
-      if (result.isLoggedIn) {
-        console.log("✅ User is logged in - triggering scrape on new tab");
-        
-        // Get the active tab details
-        chrome.tabs.get(activeInfo.tabId, async function(tab) {
-          console.log("📍 New tab URL:", tab.url);
-          
-          try {
-            await chrome.tabs.sendMessage(tab.id, { action: "checkAndScrape" });
-            console.log("✅ Successfully sent checkAndScrape to new tab");
-          } catch (error) {
-            console.log("ℹ️ Content script not available on new tab:", error.message);
-          }
-        });
-      } else {
-        console.log("❌ User not logged in - skipping scrape");
-      }
-    });
-  });
-  
-  console.log("✅ Tab change listener set up successfully");
+  console.log("ℹ️ Manual detection mode: tab-change auto-scrape disabled");
 }
 
 function checkLoginStatus() {
@@ -78,27 +45,6 @@ function checkLoginStatus() {
 function showMainPage() {
   document.getElementById("login-page").style.display = "none";
   document.getElementById("main-page").style.display = "block";
-
-  // Trigger scraping on current page every time popup opens
-  console.log("🔄 Popup opened (showMainPage called) - triggering scrape on current page...");
-  console.log("🕐 Timestamp:", new Date().toISOString());
-  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-    console.log("📋 Tabs query result:", tabs);
-    if (tabs[0]) {
-      console.log("📍 Current tab URL:", tabs[0].url);
-      console.log("📍 Current tab ID:", tabs[0].id);
-      try {
-        console.log("📤 About to send checkAndScrape message...");
-        await chrome.tabs.sendMessage(tabs[0].id, { action: "checkAndScrape" });
-        console.log("✅ Successfully sent checkAndScrape message to current tab");
-      } catch (error) {
-        console.error("❌ Error sending message:", error);
-        console.log("ℹ️ Content script not available (might not be EMR page)");
-      }
-    } else {
-      console.log("⚠️ No active tab found in query result");
-    }
-  });
 
   // Check for pending session data from auto-scraping
   chrome.storage.local.get(
@@ -748,27 +694,8 @@ async function handleSuccessfulLogin(accessToken, email) {
   // Fetch and cache emr_url
   await fetchAndCacheEMRUrl(accessToken);
 
-  // After login, trigger the scraping flow on the current page (if on EMR domain)
-  console.log("🔄 Attempting to send checkAndScrape message to current tab...");
-  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-    if (tabs[0]) {
-      console.log("📍 Current tab URL:", tabs[0].url);
-      console.log("📍 Tab ID:", tabs[0].id);
-      
-      try {
-        // Send message to content script to check and scrape
-        console.log("📤 Sending checkAndScrape message...");
-        await chrome.tabs.sendMessage(tabs[0].id, { action: "checkAndScrape" });
-        console.log("✅ Successfully sent checkAndScrape message to content script");
-      } catch (error) {
-        // Content script might not be injected yet - this is normal for non-EMR pages
-        console.error("❌ Failed to send message to content script:", error);
-        console.log("ℹ️ Content script not available on current page (might not be an EMR page or page needs refresh)");
-      }
-    } else {
-      console.log("⚠️ No active tab found");
-    }
-  });
+  // Manual-only mode: session detection starts from in-page "Detect Session" button
+  console.log("ℹ️ Manual detection mode enabled after login");
 
   showMainPage();
 }

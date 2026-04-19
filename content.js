@@ -1,7 +1,10 @@
 // Create and inject the floating toggle button on web pages
 (async function () {
   // Check if button already exists
-  if (document.getElementById("sessynote-toggle-btn")) {
+  if (
+    document.getElementById("sessynote-toggle-btn") ||
+    document.getElementById("sessynote-detect-btn")
+  ) {
     return;
   }
 
@@ -143,36 +146,19 @@
   });
 
   // Update button title based on side panel state
-  let blinkInterval = null;
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === "sidePanelClosed") {
       toggleBtn.title = "Open SessyNote";
     } else if (message.action === "sidePanelOpened") {
       toggleBtn.title = "Close SessyNote";
-      // Stop blinking when panel opens
-      if (blinkInterval) {
-        clearInterval(blinkInterval);
-        blinkInterval = null;
-        toggleBtn.style.backgroundColor = "white";
-      }
     } else if (message.action === "startBlinking") {
-      // Start blinking animation
-      console.log("SessyNote: Starting blink animation");
-      let isBlue = false;
-      blinkInterval = setInterval(() => {
-        toggleBtn.style.backgroundColor = isBlue ? "white" : "#4A90E2";
-        isBlue = !isBlue;
-      }, 500);
-      toggleBtn.title = "Session detected! Click to open";
+      // Blinking has been intentionally disabled (UI change request)
+      toggleBtn.style.backgroundColor = "white";
+      toggleBtn.title = "Open SessyNote";
     } else if (message.action === "stopBlinking") {
-      // Stop blinking animation
-      console.log("SessyNote: Stopping blink animation");
-      if (blinkInterval) {
-        clearInterval(blinkInterval);
-        blinkInterval = null;
-        toggleBtn.style.backgroundColor = "white";
-      }
+      // Blinking has been intentionally disabled (UI change request)
+      toggleBtn.style.backgroundColor = "white";
       toggleBtn.title = "Toggle SessyNote";
     }
   });
@@ -197,6 +183,60 @@
   // Inject into page
   document.body.appendChild(toggleBtn);
 
+  // Create a top-right "Detect Session" button (manual detection trigger)
+  const detectBtn = document.createElement("button");
+  detectBtn.id = "sessynote-detect-btn";
+  detectBtn.type = "button";
+  detectBtn.innerHTML = "📋 Detect Session";
+  detectBtn.title = "Detect session on this page";
+  detectBtn.style.cssText = `
+    position: fixed;
+    top: 92px;
+    right: 16px;
+    height: 40px;
+    padding: 0 16px;
+    border: none;
+    border-radius: 8px;
+    background: #43a047;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    z-index: 2147483647;
+  `;
+
+  detectBtn.addEventListener("click", async () => {
+    if (detectBtn.disabled) return;
+
+    detectBtn.disabled = true;
+    const originalLabel = detectBtn.innerHTML;
+    detectBtn.innerHTML = "⏳ Detecting...";
+    detectBtn.style.opacity = "0.9";
+
+    try {
+      // Manual trigger: run the existing detection/scrape flow only on click
+      sessionAlreadyScraped = false;
+      if (typeof checkAndScrapeIfMatch === "function") {
+        await checkAndScrapeIfMatch({ singleAttempt: true });
+      } else {
+        console.error(
+          "SessyNote: checkAndScrapeIfMatch is not available yet"
+        );
+      }
+    } catch (error) {
+      console.error("SessyNote: Error during manual detect:", error);
+    } finally {
+      setTimeout(() => {
+        detectBtn.disabled = false;
+        detectBtn.innerHTML = originalLabel;
+        detectBtn.style.opacity = "1";
+      }, 1200);
+    }
+  });
+
+  document.body.appendChild(detectBtn);
+
   // Flag indicating the content script was injected and is active
   try {
     window.__sessynote_content_injected = true;
@@ -218,29 +258,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("========================================");
   
   if (message.action === "checkAndScrape") {
+    // Manual-only mode: ignore external auto-trigger messages
     console.log(
-      "SessyNote: ✅ Received checkAndScrape message - will trigger fresh scrape"
+      "SessyNote: Manual-only mode active - ignoring checkAndScrape message"
     );
-    
-    // Reset the flag to allow re-scraping when user manually opens popup
-    const oldValue = sessionAlreadyScraped;
-    sessionAlreadyScraped = false;
-    console.log("SessyNote: 🔄 Reset sessionAlreadyScraped from", oldValue, "to", sessionAlreadyScraped);
-    
-    // Wait a bit longer to ensure the function is defined
-    setTimeout(() => {
-      console.log("SessyNote: Attempting to call checkAndScrapeIfMatch...");
-      if (typeof checkAndScrapeIfMatch === "function") {
-        console.log("SessyNote: ✅ Function found, calling now...");
-        checkAndScrapeIfMatch();
-      } else {
-        console.error(
-          "SessyNote: ❌ checkAndScrapeIfMatch function not yet defined"
-        );
-      }
-    }, 500);
-    
-    return true; // Keep message channel open
+    if (typeof sendResponse === "function") {
+      sendResponse({ success: false, manualOnly: true });
+    }
+    return true;
   }
 });
 
@@ -502,8 +527,9 @@ function ensureLateContentObserver() {
   });
 }
 
-async function checkAndScrapeIfMatch() {
+async function checkAndScrapeIfMatch(options = {}) {
   try {
+    const { singleAttempt = false } = options;
     const currentUrl = window.location.href;
     console.log("SessyNote: 🔍 checkAndScrapeIfMatch called");
     console.log("SessyNote: 🌐 Checking URL against all pairs:", currentUrl);
@@ -609,6 +635,13 @@ async function checkAndScrapeIfMatch() {
         sessionAlreadyScraped = false;
         popupWasVisible = false;
 
+        if (singleAttempt) {
+          console.log(
+            "SessyNote: Popup candidate exists but popup is not ready/visible in single-attempt mode. Skipping retries."
+          );
+          return;
+        }
+
         console.log(
           "SessyNote: 🔍 Popup-based EMR candidates found. Watching for popup...",
           popupCandidates.map((c) => c.emrTypeId)
@@ -624,12 +657,9 @@ async function checkAndScrapeIfMatch() {
   }
 }
 
-// Initialize auto-scraping on page load and URL changes
+// Initialize manual mode helpers (no auto-scraping)
 (async function () {
-  console.log("SessyNote: Auto-scraping initialized");
-
-  // Check URL when page loads
-  await checkAndScrapeIfMatch();
+  console.log("SessyNote: Manual detection mode initialized");
 
   // Listen for URL changes (for SPAs)
   let lastUrl = window.location.href;
@@ -650,8 +680,6 @@ async function checkAndScrapeIfMatch() {
       sessionAlreadyScraped = false;
       popupWasVisible = false;
       stopLateContentObserver();
-
-      await checkAndScrapeIfMatch();
     }
   });
 
