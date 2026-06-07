@@ -4,6 +4,12 @@
 // API Base URL
 const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
 //const API_BASE_URL =  "http://localhost:8001/api/v1"
+const AI_VISION_ENDPOINT_STORAGE_KEY = "aiVisionExtractionUrl";
+const AI_VISION_API_KEY_STORAGE_KEY = "aiVisionApiKey";
+const DEFAULT_AI_VISION_ENDPOINT = `${API_BASE_URL}/extract-session`;
+//const DEFAULT_AI_VISION_ENDPOINT =  "http://localhost:8001/api/v1/extract-session"
+
+//const DEFAULT_AI_VISION_ENDPOINT = "http://127.0.0.1:8788/extract-session";
 // Track side panel state per window
 const sidePanelState = new Map();
 let clickCount = 0;
@@ -169,6 +175,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     });
     return true; // Keep channel open for async response
+  }
+
+  if (message.action === "extractSessionFromVisibleScreens") {
+    // Manual-only mode: screenshot-based AI extraction is disabled.
+    sendResponse({
+      success: false,
+      manualOnly: true,
+      error: "Screenshot extraction is disabled. Use manual Detect Session (HTML) instead.",
+    });
+    return true;
+  }
+
+  if (message.action === "extractSessionFromBodyHtml") {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (!tabs[0]) {
+        sendResponse({ success: false, error: "No active tab found" });
+        return;
+      }
+
+      try {
+        const extractionResult = await requestVisionHtmlExtraction({
+          pageUrl: tabs[0].url || "",
+          pageTitle: tabs[0].title || "",
+          bodyHtml: message.bodyHtml || "",
+          linkedRowHtml: message.linkedRowHtml || "",
+          linkedTableHeaderHtml: message.linkedTableHeaderHtml || "",
+        });
+
+        sendResponse(extractionResult);
+      } catch (error) {
+        console.error("SessyNote: HTML AI extraction failed:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    });
+    return true;
   }
 
   // Handle check URL against all EMR type pairs
@@ -558,6 +599,97 @@ async function handlePageCaptureForAPI(tabId, url) {
     console.error("Error capturing page for API:", error);
     throw error;
   }
+}
+
+async function requestVisionHtmlExtraction(payload) {
+  const settings = await chrome.storage.local.get([
+    AI_VISION_ENDPOINT_STORAGE_KEY,
+    AI_VISION_API_KEY_STORAGE_KEY,
+    "accessToken",
+  ]);
+
+  const endpoint = (
+    settings[AI_VISION_ENDPOINT_STORAGE_KEY] || DEFAULT_AI_VISION_ENDPOINT
+  ).trim();
+  if (!endpoint) {
+    return {
+      success: false,
+      notConfigured: true,
+      error: "AI vision endpoint not configured",
+    };
+  }
+
+  const htmlEndpoint = resolveHtmlExtractionEndpoint(endpoint);
+
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (settings.accessToken) {
+    headers.Authorization = `Bearer ${settings.accessToken}`;
+  }
+
+  if (settings[AI_VISION_API_KEY_STORAGE_KEY]) {
+    headers["x-api-key"] = settings[AI_VISION_API_KEY_STORAGE_KEY];
+  }
+
+  const response = await fetch(htmlEndpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      pageUrl: payload.pageUrl || "",
+      pageTitle: payload.pageTitle || "",
+      bodyHtml: payload.bodyHtml || "",
+      linkedRowHtml: payload.linkedRowHtml || "",
+      linkedTableHeaderHtml: payload.linkedTableHeaderHtml || "",
+    }),
+  });
+
+  const responseData = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      responseData.message ||
+        `AI HTML extraction failed with status ${response.status}`
+    );
+  }
+
+  const scrapedData =
+    responseData.scrapedData ||
+    responseData.data ||
+    responseData.result ||
+    responseData.extracted_fields ||
+    responseData.fields ||
+    null;
+
+  if (!scrapedData || typeof scrapedData !== "object") {
+    throw new Error("AI HTML extraction returned no structured data");
+  }
+
+  return {
+    success: true,
+    scrapedData,
+    rawResponse: responseData,
+  };
+}
+
+function resolveHtmlExtractionEndpoint(endpoint) {
+  const trimmed = String(endpoint || "").trim();
+  if (!trimmed) return trimmed;
+
+  if (trimmed.endsWith("/extract-session-html")) {
+    return trimmed;
+  }
+
+  if (trimmed.endsWith("/extract-session")) {
+    return `${trimmed}-html`;
+  }
+
+  if (trimmed.endsWith("/")) {
+    return `${trimmed}extract-session-html`;
+  }
+
+  return `${trimmed}/extract-session-html`;
 }
 
 // NEW APPROACH: Disable virtual scrolling to force ALL content to load at once

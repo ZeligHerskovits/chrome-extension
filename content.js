@@ -215,18 +215,122 @@
     detectBtn.style.opacity = "0.9";
 
     try {
-      // Manual trigger: run the existing detection/scrape flow only on click
-      sessionAlreadyScraped = false;
-      if (typeof checkAndScrapeIfMatch === "function") {
-        await checkAndScrapeIfMatch({ singleAttempt: true });
+      const matchedConfigs = await resolveActiveEmrConfigsForCurrentUrl(
+        window.location.href
+      );
+      if (!Array.isArray(matchedConfigs) || !matchedConfigs.length) {
+        showDetectionStatus(
+          "No EMR configuration matched this URL. Please verify your EMR setup.",
+          "error",
+          { duration: 5000 }
+        );
+        return;
+      }
+
+      const matchedConfig = await showEmrMatchSelector(matchedConfigs);
+      if (!matchedConfig?.emrTypeId) {
+        showDetectionStatus("Detection canceled. No EMR type selected.", "warning");
+        return;
+      }
+
+      activeEmrConfig = matchedConfig;
+
+      const fullBodyHtml = await withExpandedScrollableContent(async () => {
+        await autoScrollForLazyContent();
+        return buildLiveBodyHtmlSnapshot();
+      });
+      const linkedSessionContext = getLastClickedSessionContext();
+
+      if (!fullBodyHtml.trim()) {
+        showDetectionStatus("Page body is empty. Nothing to analyze.", "warning");
+        return;
+      }
+
+      showPageProcessingLoader("Analyzing page...");
+
+      showDetectionStatus("Sending page HTML to AI...", "info", {
+        autoHide: false,
+      });
+
+      const aiResponse = await new Promise((resolve) => {
+        chrome.runtime.sendMessage(
+          {
+            action: "extractSessionFromBodyHtml",
+            bodyHtml: fullBodyHtml,
+            linkedRowHtml: linkedSessionContext.linkedRowHtml,
+            linkedTableHeaderHtml: linkedSessionContext.linkedTableHeaderHtml,
+          },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              resolve({
+                success: false,
+                error: chrome.runtime.lastError.message,
+              });
+              return;
+            }
+            resolve(response || { success: false, error: "No response" });
+          }
+        );
+      });
+
+      if (!aiResponse.success) {
+        showDetectionStatus(
+          `AI HTML detection failed: ${aiResponse.error || "Unknown error"}`,
+          "error",
+          { duration: 5000 }
+        );
+        return;
+      }
+
+      console.log("SessyNote: AI HTML extraction result:", aiResponse.scrapedData);
+
+      const rawExtractedData =
+        aiResponse.scrapedData && typeof aiResponse.scrapedData === "object"
+          ? aiResponse.scrapedData
+          : null;
+      const extractedNotes =
+        rawExtractedData &&
+        rawExtractedData.session_notes &&
+        typeof rawExtractedData.session_notes === "object"
+          ? rawExtractedData.session_notes
+          : null;
+      const extractedData = rawExtractedData
+        ? {
+            ...(extractedNotes || {}),
+            ...(rawExtractedData.xpath ? { xpath: rawExtractedData.xpath } : {}),
+            _rawAiExtraction: rawExtractedData,
+          }
+        : null;
+
+      if (extractedData && Object.keys(extractedData).length > 0) {
+        chrome.runtime.sendMessage({
+          action: "autoFillSession",
+          data: {
+            scrapedData: extractedData,
+            emrTypeId: matchedConfig.emrTypeId,
+          },
+        });
+      }
+
+      if (extractedNotes) {
+        showDetectionStatus("AI found session notes from page HTML.", "success");
+      } else if (extractedData && Object.keys(extractedData).length > 0) {
+        showDetectionStatus("AI detected session fields from page HTML.", "success");
       } else {
-        console.error(
-          "SessyNote: checkAndScrapeIfMatch is not available yet"
+        showDetectionStatus(
+          "AI completed, but no session notes were found.",
+          "warning"
         );
       }
     } catch (error) {
       console.error("SessyNote: Error during manual detect:", error);
+      showDetectionStatus(
+        `Detect failed: ${error?.message || "Unexpected error"}`,
+        "error",
+        { duration: 5000 }
+      );
     } finally {
+      hidePageProcessingLoader();
       setTimeout(() => {
         detectBtn.disabled = false;
         detectBtn.innerHTML = originalLabel;
@@ -254,7 +358,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log("========================================");
   console.log("SessyNote: 📨 Message received at:", new Date().toISOString());
   console.log("SessyNote: Message action:", message.action);
-  console.log("SessyNote: Current sessionAlreadyScraped:", sessionAlreadyScraped);
   console.log("========================================");
   
   if (message.action === "checkAndScrape") {
@@ -276,20 +379,403 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Check URL on page load and navigation
 // Track the currently matched EMR config so we can reuse it (e.g. for popups)
 let activeEmrConfig = null; // { emrTypeId, emrResponse }
-let popupCandidates = []; // [{ emrTypeId, emrResponse, emrType, isPopup, popupRootSelector }]
-let popupCandidateIndex = 0;
+let detectionStatusHideTimer = null;
 
-// Track popup / late-content scraping state
-let lateContentObserver = null;
-let lateScrapeScheduled = false;
-let sessionAlreadyScraped = false;
-let popupWasVisible = false;
+function showPageProcessingLoader(message = "Processing...") {
+  let overlay = document.getElementById("sessynote-page-loader-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "sessynote-page-loader-overlay";
+    overlay.style.cssText = `
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.18);
+      z-index: 2147483646;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: auto;
+    `;
+
+    overlay.innerHTML = `
+      <div style="
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        gap:10px;
+        background:#ffffff;
+        border-radius:12px;
+        padding:16px 18px;
+        box-shadow:0 10px 28px rgba(0,0,0,0.22);
+        min-width:170px;
+      ">
+        <span class="sessynote-page-loader-ring" aria-hidden="true"></span>
+        <span id="sessynote-page-loader-message" style="
+          color:#0f172a;
+          font-size:13px;
+          font-weight:600;
+          text-align:center;
+        "></span>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+  }
+
+  const messageEl = overlay.querySelector("#sessynote-page-loader-message");
+  if (messageEl) {
+    messageEl.textContent = message;
+  }
+
+  overlay.style.display = "flex";
+
+  if (!document.getElementById("sessynote-page-loader-style")) {
+    const styleEl = document.createElement("style");
+    styleEl.id = "sessynote-page-loader-style";
+    styleEl.textContent = `
+      @keyframes sessynote-page-spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+
+      .sessynote-page-loader-ring {
+        width: 34px;
+        height: 34px;
+        border-radius: 50%;
+        border: 4px solid rgba(30, 136, 229, 0.18);
+        border-top-color: #1e88e5;
+        animation: sessynote-page-spin 0.9s linear infinite;
+        box-sizing: border-box;
+      }
+    `;
+    document.head.appendChild(styleEl);
+  }
+}
+
+function hidePageProcessingLoader() {
+  const overlay = document.getElementById("sessynote-page-loader-overlay");
+  if (overlay) {
+    overlay.style.display = "none";
+  }
+}
 
 // Track the last clicked table row (used when a session popup is opened).
 // This lets us evaluate XPath for row-based fields (like Date of Session,
 // Time In/Out, Length, Service Type) specifically within the row that
 // triggered the popup, without hard-coding any column indices.
 let lastClickedSessionRow = null;
+
+function showDetectionStatus(message, type = "info", options = {}) {
+  const { autoHide = true, duration = 3200, loading = false } = options;
+
+  let toast = document.getElementById("sessynote-detection-status");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "sessynote-detection-status";
+    toast.style.cssText = `
+      position: fixed;
+      top: 140px;
+      right: 16px;
+      max-width: 340px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.4;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+      z-index: 2147483647;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      opacity: 0;
+      transform: translateY(-6px);
+      pointer-events: none;
+    `;
+    document.body.appendChild(toast);
+  }
+
+  const palette = {
+    info: "#1e88e5",
+    success: "#2e7d32",
+    warning: "#ef6c00",
+    error: "#c62828",
+  };
+
+  if (loading) {
+    toast.innerHTML = `
+      <span style="display:inline-flex;align-items:center;gap:10px;">
+        <span class="sessynote-loader-ring" aria-hidden="true"></span>
+        <span class="sessynote-loader-message"></span>
+      </span>
+    `;
+
+    const messageEl = toast.querySelector(".sessynote-loader-message");
+    if (messageEl) {
+      messageEl.textContent = message;
+    }
+
+    if (!document.getElementById("sessynote-loader-style")) {
+      const styleEl = document.createElement("style");
+      styleEl.id = "sessynote-loader-style";
+      styleEl.textContent = `
+        @keyframes sessynote-spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+
+        .sessynote-loader-ring {
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          border: 2px solid rgba(255,255,255,0.35);
+          border-top-color: #ffffff;
+          animation: sessynote-spin 0.8s linear infinite;
+          flex: 0 0 auto;
+        }
+      `;
+      document.head.appendChild(styleEl);
+    }
+  } else {
+    toast.textContent = message;
+  }
+
+  toast.style.background = palette[type] || palette.info;
+  toast.style.opacity = "1";
+  toast.style.transform = "translateY(0)";
+
+  if (detectionStatusHideTimer) {
+    clearTimeout(detectionStatusHideTimer);
+    detectionStatusHideTimer = null;
+  }
+
+  if (autoHide) {
+    detectionStatusHideTimer = setTimeout(() => {
+      const currentToast = document.getElementById("sessynote-detection-status");
+      if (!currentToast) return;
+      currentToast.style.opacity = "0";
+      currentToast.style.transform = "translateY(-6px)";
+    }, duration);
+  }
+}
+
+function getDisplayNameForEmrMatch(match, index) {
+  const emrType = match?.emrType || {};
+  return (
+    emrType.name ||
+    emrType.emr_name ||
+    emrType.title ||
+    `EMR Type ${match?.emrTypeId || index + 1}`
+  );
+}
+
+function resolveActiveEmrConfigsForCurrentUrl(currentUrl) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { action: "checkUrlAgainstAllPairs", currentUrl },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.error(
+            "SessyNote: Failed to resolve EMR config for manual detect:",
+            chrome.runtime.lastError
+          );
+          resolve(null);
+          return;
+        }
+
+        if (
+          !response?.success ||
+          !response?.matched ||
+          !Array.isArray(response.matches)
+        ) {
+          resolve([]);
+          return;
+        }
+
+        const matches = response.matches
+          .map((match) => {
+            const emrType = match.emrType || {};
+            const emrResponse = match.emrResponse || null;
+            return {
+              emrTypeId: match.emrTypeId,
+              emrResponse,
+              emrType,
+              isPopup: !!emrType.is_popup || !!emrResponse?.is_popup,
+              popupRootSelector:
+                emrType.popup_root_selector ||
+                emrResponse?.popup_root_selector ||
+                null,
+            };
+          });
+
+        if (!matches.length) {
+          resolve([]);
+          return;
+        }
+
+        resolve(matches);
+      }
+    );
+  });
+}
+
+function showEmrMatchSelector(matches) {
+  return new Promise((resolve) => {
+    if (!Array.isArray(matches) || !matches.length) {
+      resolve(null);
+      return;
+    }
+
+    const existingModal = document.getElementById("sessynote-emr-selector-modal");
+    if (existingModal) {
+      existingModal.remove();
+    }
+
+    const backdrop = document.createElement("div");
+    backdrop.id = "sessynote-emr-selector-modal";
+    backdrop.style.cssText = `
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 2147483647;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      width: min(440px, 100%);
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+      padding: 18px;
+      color: #1f2937;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    `;
+
+    const title = document.createElement("div");
+    title.textContent = "Select EMR Type";
+    title.style.cssText = "font-size: 17px; font-weight: 700; margin-bottom: 8px;";
+
+    const subtitle = document.createElement("div");
+    subtitle.textContent = `Found ${matches.length} matching EMR configuration${matches.length > 1 ? "s" : ""}.`;
+    subtitle.style.cssText = "font-size: 13px; color: #4b5563; margin-bottom: 12px;";
+
+    const select = document.createElement("select");
+    select.style.cssText = `
+      width: 100%;
+      height: 40px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 0 10px;
+      font-size: 14px;
+      margin-bottom: 14px;
+      outline: none;
+      background: #fff;
+      color: #111827;
+    `;
+
+    const placeholderOption = document.createElement("option");
+    placeholderOption.value = "";
+    placeholderOption.textContent = "Choose an EMR type";
+    select.appendChild(placeholderOption);
+
+    matches.forEach((match, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = getDisplayNameForEmrMatch(match, index);
+      select.appendChild(option);
+    });
+
+    if (matches.length === 1) {
+      select.value = "0";
+    }
+
+    const actions = document.createElement("div");
+    actions.style.cssText = "display: flex; gap: 10px; justify-content: flex-end;";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText = `
+      border: 1px solid #d1d5db;
+      background: #fff;
+      color: #374151;
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+    `;
+
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.textContent = "Continue";
+    confirmBtn.style.cssText = `
+      border: none;
+      background: #2e7d32;
+      color: #fff;
+      height: 36px;
+      padding: 0 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 700;
+    `;
+
+    const cleanupAndResolve = (value) => {
+      backdrop.remove();
+      resolve(value);
+    };
+
+    cancelBtn.addEventListener("click", () => cleanupAndResolve(null));
+
+    confirmBtn.addEventListener("click", () => {
+      const selectedIndex = Number(select.value);
+      if (Number.isNaN(selectedIndex) || selectedIndex < 0 || selectedIndex >= matches.length) {
+        showDetectionStatus("Please choose an EMR type from the list.", "warning");
+        return;
+      }
+
+      cleanupAndResolve(matches[selectedIndex]);
+    });
+
+    backdrop.addEventListener("click", (event) => {
+      if (event.target === backdrop) {
+        cleanupAndResolve(null);
+      }
+    });
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+
+    card.appendChild(title);
+    card.appendChild(subtitle);
+    card.appendChild(select);
+    card.appendChild(actions);
+    backdrop.appendChild(card);
+
+    document.body.appendChild(backdrop);
+    select.focus();
+  });
+}
+
+function getLastClickedSessionContext() {
+  if (!lastClickedSessionRow) {
+    return {
+      linkedRowHtml: "",
+      linkedTableHeaderHtml: "",
+    };
+  }
+
+  const table = lastClickedSessionRow.closest("table");
+  const thead = table?.querySelector("thead");
+  const headerRow = thead?.querySelector("tr");
+
+  return {
+    linkedRowHtml: lastClickedSessionRow.outerHTML || "",
+    linkedTableHeaderHtml: headerRow?.outerHTML || thead?.outerHTML || "",
+  };
+}
 
 // Capture clicks anywhere in the document so we remember which row
 // the user interacted with most recently. When the blue "view" icon
@@ -312,351 +798,6 @@ document.addEventListener(
   true
 );
 
-// Helper to stop late-content monitoring once we successfully scrape
-function stopLateContentObserver() {
-  if (lateContentObserver) {
-    lateContentObserver.disconnect();
-    lateContentObserver = null;
-  }
-}
-
-// Determine if an element is visible (not hidden/collapsed)
-function isElementVisible(el) {
-  if (!el) return false;
-  const style = window.getComputedStyle(el);
-  if (style.display === "none" || style.visibility === "hidden") return false;
-  if (el.getAttribute("aria-hidden") === "true") return false;
-  return el.getClientRects().length > 0;
-}
-
-// Get the popup root element if configured
-function getPopupRoot() {
-  if (
-    activeEmrConfig &&
-    activeEmrConfig.isPopup &&
-    activeEmrConfig.popupRootSelector
-  ) {
-    try {
-      return document.querySelector(activeEmrConfig.popupRootSelector);
-    } catch (e) {
-      console.error(
-        "SessyNote: Error querying popup_root_selector:",
-        e
-      );
-    }
-  }
-  return null;
-}
-
-// Decide what DOM subtree to scrape from.
-// For normal pages, this is the whole document.
-// For popup-based EMR types, this will be the popup container when visible.
-function getScrapeRoot() {
-  if (activeEmrConfig && activeEmrConfig.isPopup) {
-    const popup = getPopupRoot();
-    if (popup && isElementVisible(popup)) {
-      console.log(
-        "SessyNote: Using popup root for scrape:",
-        activeEmrConfig.popupRootSelector
-      );
-      return popup;
-    }
-  }
-
-  // Fallback: scrape entire document (non-popup types)
-  return document;
-}
-
-// Try scraping again after new content appears (e.g. popup opened)
-async function tryLateScrape() {
-  if (!activeEmrConfig) {
-    return;
-  }
-
-  console.log(
-    "SessyNote: Detected DOM changes, checking if popup is visible..."
-  );
-
-  // For popup types, only scrape when popup is visible
-  if (activeEmrConfig.isPopup) {
-    const popup = getPopupRoot();
-    const isVisible = !!popup && isElementVisible(popup);
-
-    // Detect popup close event
-    if (!isVisible) {
-      if (popupWasVisible) {
-        console.log("SessyNote: 🔔 Popup closed detected");
-        if (sessionAlreadyScraped) {
-          notifySaveSessionPrompt("popup-closed");
-        }
-        sessionAlreadyScraped = false;
-        popupWasVisible = false;
-      }
-
-      console.log(
-        "SessyNote: ⏸️ Popup not visible. Waiting for popup to open..."
-      );
-      return;
-    }
-
-    // Popup is visible
-    if (!popupWasVisible) {
-      popupWasVisible = true;
-    }
-
-    // Popup is visible - check if we already scraped THIS popup
-    if (sessionAlreadyScraped) {
-      console.log("SessyNote: ⏭️ Already scraped current popup, skipping");
-      return;
-    }
-
-    console.log(
-      "SessyNote: ✅ Popup is visible and not yet scraped. Trying candidates..."
-    );
-
-    const minFields = 6;
-    const candidates = popupCandidates.length
-      ? popupCandidates
-      : [activeEmrConfig];
-
-    for (let i = popupCandidateIndex; i < candidates.length; i += 1) {
-      const candidate = candidates[i];
-      activeEmrConfig = candidate;
-      popupCandidateIndex = i;
-
-      const root = getScrapeRoot();
-      const scrapedData = scrapePageData(candidate.emrResponse, root);
-      const foundValuesCount = Object.keys(scrapedData).length;
-
-      console.log(
-        `SessyNote: Popup candidate ${candidate.emrTypeId} found ${foundValuesCount} value(s)`
-      );
-
-      if (foundValuesCount >= minFields) {
-        console.log(
-          `SessyNote: ✅ Popup candidate ${candidate.emrTypeId} matched. Proceeding...`
-        );
-        sessionAlreadyScraped = true;
-
-        chrome.runtime.sendMessage({
-          action: "autoFillSession",
-          data: {
-            scrapedData: scrapedData,
-            emrTypeId: candidate.emrTypeId,
-          },
-        });
-        return;
-      }
-
-      console.log(
-        `SessyNote: ❌ Popup candidate ${candidate.emrTypeId} insufficient. Trying next...`
-      );
-      popupCandidateIndex = i + 1;
-    }
-
-    console.log("SessyNote: ❌ No popup candidates produced enough values.");
-    return;
-  } else if (sessionAlreadyScraped) {
-    // Non-popup types - respect the flag
-    return;
-  }
-
-  const root = getScrapeRoot();
-  const scrapedData = scrapePageData(activeEmrConfig.emrResponse, root);
-  console.log("SessyNote: Late-scrape data:", scrapedData);
-
-  const foundValuesCount = Object.keys(scrapedData).length;
-  // Require at least 6 values to consider this a valid session (same as non-popup)
-  const minFields = 6;
-  if (foundValuesCount < minFields) {
-    console.log(
-      `SessyNote: Late scrape only found ${foundValuesCount} value(s). Need at least ${minFields}. Waiting for more content...`
-    );
-    return;
-  }
-
-  console.log(
-    `SessyNote: Late scrape found ${foundValuesCount} values - treating this as a session page (likely popup). Proceeding...`
-  );
-
-  sessionAlreadyScraped = true;
-  // DON'T stop observer - keep watching for popup close/open cycles
-  // stopLateContentObserver();
-
-  chrome.runtime.sendMessage({
-    action: "autoFillSession",
-    data: {
-      scrapedData: scrapedData,
-      emrTypeId: activeEmrConfig.emrTypeId,
-    },
-  });
-}
-
-// Start observing the DOM for new content (e.g. popup or lazy-loaded panel)
-function ensureLateContentObserver() {
-  // Only enable late-content watching for popup EMR types.
-  if (
-    !activeEmrConfig ||
-    !activeEmrConfig.isPopup ||
-    lateContentObserver
-  ) {
-    return;
-  }
-
-  console.log(
-    "SessyNote: Starting DOM observer to watch for popup open/close cycles..."
-  );
-
-  lateContentObserver = new MutationObserver(() => {
-    // Always check - don't stop when scraped, so we can detect popup close/open
-    
-    // Debounce multiple rapid mutations
-    if (lateScrapeScheduled) return;
-    lateScrapeScheduled = true;
-
-    setTimeout(async () => {
-      lateScrapeScheduled = false;
-      await tryLateScrape();
-    }, 1000);
-  });
-
-  lateContentObserver.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-  });
-}
-
-async function checkAndScrapeIfMatch(options = {}) {
-  try {
-    const { singleAttempt = false } = options;
-    const currentUrl = window.location.href;
-    console.log("SessyNote: 🔍 checkAndScrapeIfMatch called");
-    console.log("SessyNote: 🌐 Checking URL against all pairs:", currentUrl);
-
-    // Ask background script to check URL against all pairs
-    console.log("SessyNote: 📤 Sending checkUrlAgainstAllPairs message to background...");
-    chrome.runtime.sendMessage(
-      { action: "checkUrlAgainstAllPairs", currentUrl: currentUrl },
-      async (response) => {
-        console.log("SessyNote: 📥 Received response from background:", response);
-        
-        if (!response || !response.success) {
-          console.error(
-            "SessyNote: ❌ Failed to check URL against pairs:",
-            response?.error
-          );
-          return;
-        }
-
-        if (!response.matched || !Array.isArray(response.matches)) {
-          console.log("SessyNote: ❌ No URL match found in any pair, skipping");
-          return;
-        }
-
-        console.log(
-          "SessyNote: ✅ URL match found! Candidates:",
-          response.matches.length
-        );
-
-        const matches = response.matches
-          .map((match) => {
-            const emrType = match.emrType || {};
-            const emrResponse = match.emrResponse || null;
-            return {
-              emrTypeId: match.emrTypeId,
-              emrResponse,
-              emrType,
-              isPopup: !!emrType.is_popup || !!emrResponse?.is_popup,
-              popupRootSelector:
-                emrType.popup_root_selector ||
-                emrResponse?.popup_root_selector ||
-                null,
-            };
-          })
-          .filter((m) => !!m.emrResponse);
-
-        if (!matches.length) {
-          console.log("SessyNote: ❌ No usable EMR responses found");
-          return;
-        }
-
-        // Try non-popup candidates first (immediate scrape)
-        const nonPopupCandidates = matches.filter((m) => !m.isPopup);
-        for (const candidate of nonPopupCandidates) {
-          activeEmrConfig = candidate;
-          sessionAlreadyScraped = false;
-
-          console.log(
-            "SessyNote: 🔍 Trying non-popup EMR candidate:",
-            candidate.emrTypeId
-          );
-
-          // Wait for page to fully load (non-popup)
-          await new Promise((resolve) => setTimeout(resolve, 10000));
-
-          const root = getScrapeRoot();
-          const scrapedData = scrapePageData(candidate.emrResponse, root);
-
-          const foundValuesCount = Object.keys(scrapedData).length;
-          const minFields = 6;
-          if (foundValuesCount >= minFields) {
-            console.log(
-              `SessyNote: ✅ Non-popup candidate matched with ${foundValuesCount} values. Using EMR Type ${candidate.emrTypeId}`
-            );
-
-            sessionAlreadyScraped = true;
-
-            chrome.runtime.sendMessage({
-              action: "autoFillSession",
-              data: {
-                scrapedData: scrapedData,
-                emrTypeId: candidate.emrTypeId,
-              },
-            });
-            return;
-          }
-
-          console.log(
-            `SessyNote: ❌ Candidate ${candidate.emrTypeId} only found ${foundValuesCount} values. Trying next...`
-          );
-        }
-
-        // If no non-popup candidate worked, try popup candidates
-        const popupOnlyCandidates = matches.filter((m) => m.isPopup);
-        if (!popupOnlyCandidates.length) {
-          console.log("SessyNote: ❌ No popup candidates available. Giving up.");
-          return;
-        }
-
-        popupCandidates = popupOnlyCandidates;
-        popupCandidateIndex = 0;
-        activeEmrConfig = popupCandidates[0];
-        sessionAlreadyScraped = false;
-        popupWasVisible = false;
-
-        if (singleAttempt) {
-          console.log(
-            "SessyNote: Popup candidate exists but popup is not ready/visible in single-attempt mode. Skipping retries."
-          );
-          return;
-        }
-
-        console.log(
-          "SessyNote: 🔍 Popup-based EMR candidates found. Watching for popup...",
-          popupCandidates.map((c) => c.emrTypeId)
-        );
-
-        ensureLateContentObserver();
-        return;
-
-      }
-    );
-  } catch (error) {
-    console.error("SessyNote: Error in checkAndScrapeIfMatch:", error);
-  }
-}
-
 // Initialize manual mode helpers (no auto-scraping)
 (async function () {
   console.log("SessyNote: Manual detection mode initialized");
@@ -668,18 +809,8 @@ async function checkAndScrapeIfMatch(options = {}) {
       lastUrl = window.location.href;
       console.log("SessyNote: URL changed to", lastUrl);
 
-      // If leaving a non-popup session page, prompt to save
-      if (activeEmrConfig && !activeEmrConfig.isPopup && sessionAlreadyScraped) {
-        notifySaveSessionPrompt("url-changed");
-      }
-
       // Reset state for the new URL
       activeEmrConfig = null;
-      popupCandidates = [];
-      popupCandidateIndex = 0;
-      sessionAlreadyScraped = false;
-      popupWasVisible = false;
-      stopLateContentObserver();
     }
   });
 
@@ -749,6 +880,467 @@ function notifySaveSessionPrompt(reason) {
       );
     }
   });
+}
+
+function normalizeLabelText(value) {
+  return (value || "")
+    .toString()
+    .toLowerCase()
+    .replace(/[:*]+/g, " ")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatFieldNameForLabelLookup(value) {
+  return (value || "")
+    .toString()
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getFieldLabelCandidates(fieldConfig) {
+  const rawCandidates = [
+    fieldConfig.label,
+    fieldConfig.field_label,
+    fieldConfig.display_label,
+    fieldConfig.page_label,
+    fieldConfig.name,
+    fieldConfig.field_key,
+    fieldConfig.api_name,
+  ];
+
+  if (Array.isArray(fieldConfig.labels)) {
+    rawCandidates.push(...fieldConfig.labels);
+  }
+
+  if (Array.isArray(fieldConfig.aliases)) {
+    rawCandidates.push(...fieldConfig.aliases);
+  }
+
+  const seen = new Set();
+  const candidates = [];
+
+  rawCandidates.forEach((candidate) => {
+    if (!candidate) return;
+
+    [candidate, formatFieldNameForLabelLookup(candidate)].forEach((variant) => {
+      const normalized = normalizeLabelText(variant);
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      candidates.push(variant.toString().trim());
+    });
+  });
+
+  return candidates;
+}
+
+function getElementFieldValue(element) {
+  if (!element) return "";
+
+  const tagName = (element.tagName || "").toUpperCase();
+  if (tagName === "INPUT") {
+    const inputType = (element.type || "text").toLowerCase();
+    if (inputType === "checkbox" || inputType === "radio") {
+      return element.checked ? "Yes" : "";
+    }
+    return (element.value || "").trim();
+  }
+
+  if (tagName === "TEXTAREA") {
+    return (element.value || element.textContent || "").trim();
+  }
+
+  if (tagName === "SELECT") {
+    const selectedOption = element.options[element.selectedIndex];
+    return ((selectedOption && selectedOption.textContent) || element.value || "")
+      .toString()
+      .trim();
+  }
+
+  return (element.textContent || "").trim();
+}
+
+function isMeaningfulExtractedValue(value, normalizedLabel = "") {
+  if (!value) return false;
+
+  const normalizedValue = normalizeLabelText(value);
+  if (!normalizedValue) return false;
+  if (normalizedLabel && normalizedValue === normalizedLabel) return false;
+
+  const emptyTokens = new Set([
+    "-",
+    "--",
+    "na",
+    "n a",
+    "none",
+    "null",
+    "undefined",
+    "select",
+    "select option",
+    "not specified",
+  ]);
+
+  return !emptyTokens.has(normalizedValue);
+}
+
+function extractValueNearLabelElement(labelElement, normalizedLabel) {
+  if (!labelElement) return "";
+
+  const directForId =
+    labelElement.getAttribute && labelElement.getAttribute("for");
+  if (directForId) {
+    const linkedField = document.getElementById(directForId);
+    const linkedValue = getElementFieldValue(linkedField);
+    if (isMeaningfulExtractedValue(linkedValue, normalizedLabel)) {
+      return linkedValue;
+    }
+  }
+
+  const inlineText = (labelElement.textContent || "").trim();
+  const inlineMatch = inlineText.match(/^(.+?):\s*(.+)$/);
+  if (inlineMatch) {
+    const possibleValue = inlineMatch[2].trim();
+    if (isMeaningfulExtractedValue(possibleValue, normalizedLabel)) {
+      return possibleValue;
+    }
+  }
+
+  const siblingCandidates = [];
+  if (labelElement.nextElementSibling) {
+    siblingCandidates.push(labelElement.nextElementSibling);
+  }
+  if (labelElement.parentElement) {
+    siblingCandidates.push(
+      ...Array.from(labelElement.parentElement.children).filter(
+        (child) => child !== labelElement
+      )
+    );
+  }
+
+  for (const candidate of siblingCandidates) {
+    const nestedField = candidate.matches?.("input, textarea, select")
+      ? candidate
+      : candidate.querySelector?.(
+          "input, textarea, select, .detail-value, [contenteditable='true']"
+        );
+    const value = getElementFieldValue(nestedField || candidate);
+    if (isMeaningfulExtractedValue(value, normalizedLabel)) {
+      return value;
+    }
+  }
+
+  const rowLike = labelElement.closest?.(
+    "tr, .detail-item, .session-detail-item, .form-group, .input-group, li, .slds-form-element, .field-row, .row"
+  );
+  if (rowLike) {
+    const rowSpecific = rowLike.querySelector(
+      ".detail-value, .value, .field-value, [data-value], input, textarea, select, [contenteditable='true']"
+    );
+    const rowValue = getElementFieldValue(rowSpecific);
+    if (isMeaningfulExtractedValue(rowValue, normalizedLabel)) {
+      return rowValue;
+    }
+
+    const rowCells = Array.from(rowLike.querySelectorAll("td, th, span, div"))
+      .map((element) => getElementFieldValue(element))
+      .filter((value) => isMeaningfulExtractedValue(value, normalizedLabel));
+    const cellValue = rowCells.find(
+      (value) => normalizeLabelText(value) !== normalizedLabel
+    );
+    if (cellValue) {
+      return cellValue;
+    }
+  }
+
+  return "";
+}
+
+function findValueByLabelCandidates(fieldConfig, root = document) {
+  const labels = getFieldLabelCandidates(fieldConfig);
+  if (!labels.length) {
+    return { value: "", selectorUsed: null };
+  }
+
+  const selector = [
+    "label",
+    "span",
+    "div",
+    "td",
+    "th",
+    "p",
+    "strong",
+    "b",
+    "li",
+    ".detail-label",
+    ".field-label",
+    ".label",
+    "[aria-label]",
+    "[data-label]",
+  ].join(", ");
+
+  const elements = Array.from(root.querySelectorAll(selector));
+
+  for (const label of labels) {
+    const normalizedLabel = normalizeLabelText(label);
+    if (!normalizedLabel) continue;
+
+    for (const element of elements) {
+      const elementLabel = normalizeLabelText(
+        element.getAttribute?.("aria-label") ||
+          element.getAttribute?.("data-label") ||
+          element.textContent ||
+          ""
+      );
+
+      if (!elementLabel) continue;
+
+      const isMatch =
+        elementLabel === normalizedLabel ||
+        elementLabel.startsWith(`${normalizedLabel} `) ||
+        elementLabel.includes(`${normalizedLabel}:`) ||
+        elementLabel.includes(` ${normalizedLabel} `);
+
+      if (!isMatch) continue;
+
+      const extractedValue = extractValueNearLabelElement(
+        element,
+        normalizedLabel
+      );
+      if (isMeaningfulExtractedValue(extractedValue, normalizedLabel)) {
+        console.log(
+          `✅ SessyNote: Found value for ${
+            fieldConfig.field_key || fieldConfig.api_name || label
+          } via label match '${label}':`,
+          extractedValue
+        );
+        return {
+          value: extractedValue,
+          selectorUsed: `label:${label}`,
+        };
+      }
+    }
+  }
+
+  return { value: "", selectorUsed: null };
+}
+
+function buildLiveBodyHtmlSnapshot() {
+  const liveBody = document.body;
+  if (!liveBody) return "";
+
+  // Clone first so we can inject runtime form state without mutating the live page.
+  const snapshotBody = liveBody.cloneNode(true);
+  const liveFields = liveBody.querySelectorAll("input, textarea, select");
+  const snapshotFields = snapshotBody.querySelectorAll("input, textarea, select");
+
+  liveFields.forEach((liveField, index) => {
+    const snapshotField = snapshotFields[index];
+    if (!snapshotField) return;
+
+    const tagName = (liveField.tagName || "").toUpperCase();
+
+    if (tagName === "INPUT") {
+      const inputType = (liveField.type || "text").toLowerCase();
+      if (inputType === "checkbox" || inputType === "radio") {
+        if (liveField.checked) {
+          snapshotField.checked = true;
+          snapshotField.setAttribute("checked", "");
+        } else {
+          snapshotField.checked = false;
+          snapshotField.removeAttribute("checked");
+        }
+      } else {
+        const value = liveField.value || "";
+        snapshotField.value = value;
+        snapshotField.setAttribute("value", value);
+      }
+      return;
+    }
+
+    if (tagName === "TEXTAREA") {
+      const value = liveField.value || "";
+      snapshotField.value = value;
+      snapshotField.textContent = value;
+      return;
+    }
+
+    if (tagName === "SELECT") {
+      const liveOptions = Array.from(liveField.options || []);
+      const snapshotOptions = Array.from(snapshotField.options || []);
+
+      snapshotOptions.forEach((option, optionIndex) => {
+        const selected = !!liveOptions[optionIndex]?.selected;
+        option.selected = selected;
+        if (selected) {
+          option.setAttribute("selected", "");
+        } else {
+          option.removeAttribute("selected");
+        }
+      });
+
+      snapshotField.value = liveField.value;
+    }
+  });
+
+  return snapshotBody.innerHTML || "";
+}
+
+async function withExpandedScrollableContent(task) {
+  function findScrollableContainer() {
+    const candidates = [];
+    const allElements = document.querySelectorAll("*");
+
+    for (const element of allElements) {
+      try {
+        const style = window.getComputedStyle(element);
+        const overflowY = style.overflowY || style.overflow;
+        if (overflowY === "auto" || overflowY === "scroll") {
+          const scrollable = element.scrollHeight - element.clientHeight;
+          if (scrollable > 100) {
+            candidates.push({ element, scrollable });
+          }
+        }
+      } catch (error) {
+        // Ignore elements that can't be measured cleanly
+      }
+    }
+
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => b.scrollable - a.scrollable);
+    return candidates[0].element;
+  }
+
+  const scrollContainer = findScrollableContainer();
+  if (!scrollContainer) {
+    return task();
+  }
+
+  const originalStyles = {
+    height: scrollContainer.style.height,
+    maxHeight: scrollContainer.style.maxHeight,
+    overflow: scrollContainer.style.overflow,
+    overflowY: scrollContainer.style.overflowY,
+  };
+
+  try {
+    scrollContainer.style.height = "auto";
+    scrollContainer.style.maxHeight = "none";
+    scrollContainer.style.overflow = "visible";
+    scrollContainer.style.overflowY = "visible";
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    return await task();
+  } finally {
+    scrollContainer.style.height = originalStyles.height;
+    scrollContainer.style.maxHeight = originalStyles.maxHeight;
+    scrollContainer.style.overflow = originalStyles.overflow;
+    scrollContainer.style.overflowY = originalStyles.overflowY;
+  }
+}
+
+function getScrollableElements(minScrollableDistance = 120) {
+  const elements = [];
+  const allElements = document.querySelectorAll("*");
+
+  for (const element of allElements) {
+    try {
+      if (!(element instanceof HTMLElement)) continue;
+
+      const style = window.getComputedStyle(element);
+      const overflowY = style.overflowY || style.overflow;
+      if (overflowY !== "auto" && overflowY !== "scroll") continue;
+
+      const scrollableDistance = element.scrollHeight - element.clientHeight;
+      if (scrollableDistance < minScrollableDistance) continue;
+
+      elements.push(element);
+    } catch (error) {
+      // Ignore elements that cannot be inspected
+    }
+  }
+
+  elements.sort(
+    (a, b) =>
+      b.scrollHeight - b.clientHeight - (a.scrollHeight - a.clientHeight)
+  );
+
+  return elements;
+}
+
+async function scrollElementToLoadContent(target, options = {}) {
+  const {
+    stepPx = 900,
+    pauseMs = 120,
+    maxSteps = 200,
+    resetToTop = false,
+  } = options;
+
+  if (!target) return;
+
+  const originalScrollTop = target.scrollTop;
+  let previousHeight = 0;
+  let stableHeightRounds = 0;
+
+  for (let i = 0; i < maxSteps; i++) {
+    const maxScrollTop = Math.max(0, target.scrollHeight - target.clientHeight);
+    if (target.scrollTop >= maxScrollTop) {
+      stableHeightRounds += 1;
+      if (stableHeightRounds >= 2) break;
+    }
+
+    const nextTop = Math.min(target.scrollTop + stepPx, maxScrollTop);
+    target.scrollTop = nextTop;
+    await new Promise((resolve) => setTimeout(resolve, pauseMs));
+
+    if (target.scrollHeight > previousHeight) {
+      previousHeight = target.scrollHeight;
+      stableHeightRounds = 0;
+    }
+  }
+
+  if (resetToTop) {
+    target.scrollTop = 0;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+
+  target.scrollTop = originalScrollTop;
+}
+
+async function autoScrollForLazyContent() {
+  const pageScroller = document.scrollingElement || document.documentElement;
+  const originalWindowX = window.scrollX;
+  const originalWindowY = window.scrollY;
+
+  const scrollableElements = getScrollableElements();
+  const elementOriginalPositions = scrollableElements.map((element) => ({
+    element,
+    top: element.scrollTop,
+  }));
+
+  try {
+    await scrollElementToLoadContent(pageScroller, {
+      stepPx: Math.max(700, Math.floor(window.innerHeight * 0.9)),
+      pauseMs: 130,
+      maxSteps: 180,
+    });
+
+    for (const element of scrollableElements) {
+      await scrollElementToLoadContent(element, {
+        stepPx: Math.max(500, Math.floor(element.clientHeight * 0.9)),
+        pauseMs: 110,
+        maxSteps: 120,
+      });
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 160));
+  } finally {
+    for (const item of elementOriginalPositions) {
+      item.element.scrollTop = item.top;
+    }
+    window.scrollTo(originalWindowX, originalWindowY);
+  }
 }
 
 // Evaluate a single selector (XPath or CSS) and return the extracted value
@@ -874,6 +1466,11 @@ function tryFieldSelectors(fieldConfig, fieldKey, context = document) {
         return { value: result.value, selectorUsed: `fallback_${i + 1}` };
       }
     }
+  }
+
+  const labelBasedResult = findValueByLabelCandidates(fieldConfig, contextRoot);
+  if (labelBasedResult.value) {
+    return labelBasedResult;
   }
 
   // All selectors failed for this field

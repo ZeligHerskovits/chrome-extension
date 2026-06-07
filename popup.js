@@ -471,6 +471,7 @@ async function getSessionDetailFields(emrTypeId) {
         ...result,
         type: fieldDef?.type || null,
         dropdown_values: fieldDef?.dropdown_values || null,
+        api_name: fieldDef?.api_name || null,
       };
     });
     
@@ -1577,15 +1578,7 @@ function setupEditButtonHandlers() {
 function setupAutoDetectedSessionHandlers() {
   console.log("🔧 setupAutoDetectedSessionHandlers called");
 
-  const autoEditBtn = document.getElementById("auto-edit-button");
-  console.log("🔍 autoEditBtn found:", !!autoEditBtn);
-
-  if (autoEditBtn) {
-    autoEditBtn.addEventListener("click", function () {
-      console.log("✒️ Auto-detected session Edit button clicked");
-      switchAutoDetectedSessionToEditMode();
-    });
-  }
+  resetAutoDetectedEditButtonToEditMode();
 
   const autoGenerateButton = document.getElementById("auto-generate-button");
   console.log("🔍 autoGenerateButton found:", !!autoGenerateButton);
@@ -1600,6 +1593,26 @@ function setupAutoDetectedSessionHandlers() {
   }
 }
 
+function resetAutoDetectedEditButtonToEditMode() {
+  const autoEditBtn = document.getElementById("auto-edit-button");
+  console.log("🔍 autoEditBtn found:", !!autoEditBtn);
+
+  if (!autoEditBtn || !autoEditBtn.parentNode) {
+    return;
+  }
+
+  autoEditBtn.textContent = "Edit";
+
+  // Remove stale click handlers by replacing with a clone.
+  const newBtn = autoEditBtn.cloneNode(true);
+  autoEditBtn.parentNode.replaceChild(newBtn, autoEditBtn);
+
+  newBtn.addEventListener("click", function () {
+    console.log("✒️ Auto-detected session Edit button clicked");
+    switchAutoDetectedSessionToEditMode();
+  });
+}
+
 async function switchAutoDetectedSessionToEditMode() {
   console.log("🔄 Switching auto-detected session to edit mode...");
 
@@ -1612,6 +1625,43 @@ async function switchAutoDetectedSessionToEditMode() {
 
   const dynamicFields = currentAutoDetectedDynamicFields;
   const scrapedData = currentAutoDetectedScrapedData;
+
+  const normalizeLookupKey = (value) =>
+    (value || "")
+      .toString()
+      .toLowerCase()
+      .replace(/[-_\s]+/g, " ")
+      .trim();
+
+  const getValueFromScrapedData = (result, apiName) => {
+    if (!scrapedData || typeof scrapedData !== "object") return "";
+
+    // 1) AI label key
+    if (result?.label && Object.prototype.hasOwnProperty.call(scrapedData, result.label)) {
+      return scrapedData[result.label];
+    }
+
+    // 2) api_name
+    if (apiName && Object.prototype.hasOwnProperty.call(scrapedData, apiName)) {
+      return scrapedData[apiName];
+    }
+
+    // 3) display key
+    if (result?.key && Object.prototype.hasOwnProperty.call(scrapedData, result.key)) {
+      return scrapedData[result.key];
+    }
+
+    // 4) normalized fallback
+    const targetKeys = [result?.label, apiName, result?.key]
+      .filter(Boolean)
+      .map(normalizeLookupKey);
+    const matchedKey = Object.keys(scrapedData).find((key) => {
+      const normalizedKey = normalizeLookupKey(key);
+      return targetKeys.includes(normalizedKey);
+    });
+
+    return matchedKey ? scrapedData[matchedKey] : "";
+  };
 
   // Convert static fields (Instructions only - Client and Type are NEVER editable)
   const staticFields = [
@@ -1754,21 +1804,17 @@ async function switchAutoDetectedSessionToEditMode() {
       }
 
       if (fieldDef) {
-        // Get the api_name to look up value in scraped data
-        const fieldMapping = dynamicFields.fieldMapping;
-        let apiName = fieldMapping[result.key];
-
-        if (!apiName && fieldDef) {
-          apiName = fieldDef.api_name;
-        }
+        // Resolve api_name (confirmed result enrichment first, then field definition)
+        const apiName = result.api_name || fieldDef.api_name || null;
 
         // Get current value: for date/datetime fields, prefer original scraped data value
         // to avoid formatting issues (view mode shows formatted dates like "10/6/13")
         let fieldValue = "";
         if (fieldDef.type === "date" || fieldDef.type === "datetime") {
           // For date/datetime fields, prefer original value from scrapedData
-          if (apiName && scrapedData.hasOwnProperty(apiName)) {
-            fieldValue = scrapedData[apiName];
+          const sourceValue = getValueFromScrapedData(result, apiName);
+          if (sourceValue !== null && sourceValue !== undefined && sourceValue !== "") {
+            fieldValue = sourceValue;
             // Convert to proper format if needed
             if (fieldDef.type === "date" && fieldValue) {
               // Check if already in YYYY-MM-DD format (e.g., after saving)
@@ -1828,7 +1874,7 @@ async function switchAutoDetectedSessionToEditMode() {
                 }
               }
             }
-          } else if (existingValues.hasOwnProperty(result.key)) {
+          } else if (existingValues.hasOwnProperty(result.key) && existingValues[result.key] !== "") {
             // Fallback: try to parse the formatted date string from view mode
             const formattedValue = existingValues[result.key];
             if (fieldDef.type === "date") {
@@ -1842,11 +1888,11 @@ async function switchAutoDetectedSessionToEditMode() {
             }
           }
         } else {
-          // For non-date fields, prefer existing view value, then scraped data
-          if (existingValues.hasOwnProperty(result.key)) {
+          // For non-date fields, prefer non-empty existing view value, then scraped data
+          if (existingValues.hasOwnProperty(result.key) && existingValues[result.key] !== "") {
             fieldValue = existingValues[result.key];
-          } else if (apiName && scrapedData.hasOwnProperty(apiName)) {
-            fieldValue = scrapedData[apiName];
+          } else {
+            fieldValue = getValueFromScrapedData(result, apiName);
           }
         }
 
@@ -2011,12 +2057,8 @@ function saveAutoDetectedSession() {
       }
 
       if (fieldDef) {
-        // Get the api_name to look up value in updated scrapedData
-        const fieldMapping = dynamicFields.fieldMapping;
-        let apiName = fieldMapping[result.key];
-        if (!apiName && fieldDef) {
-          apiName = fieldDef.api_name;
-        }
+        // Resolve api_name from enriched confirmed result or field definition
+        const apiName = result.api_name || fieldDef.api_name || null;
 
         // Get value from updated scrapedData
         const fieldValue =
@@ -2087,18 +2129,7 @@ function saveAutoDetectedSession() {
   currentAutoDetectedScrapedData = scrapedData;
 
   // Change Save button back to Edit button
-  const autoEditBtn = document.getElementById("auto-edit-button");
-  if (autoEditBtn) {
-    autoEditBtn.textContent = "Edit";
-    // Remove any existing event listeners by cloning the button
-    const newBtn = autoEditBtn.cloneNode(true);
-    autoEditBtn.parentNode.replaceChild(newBtn, autoEditBtn);
-    // Add the event listener to the new button
-    newBtn.addEventListener("click", function () {
-      console.log("✏️ Auto-detected session Edit button clicked");
-      switchAutoDetectedSessionToEditMode();
-    });
-  }
+  resetAutoDetectedEditButtonToEditMode();
 
   console.log("✅ Changes saved, switched back to view mode with truncation");
 }
@@ -4606,8 +4637,8 @@ async function renderDynamicFields(dynamicFields) {
       return;
     }
 
-    // Find matching field definition by matching result.key with name (case-insensitive, remove dashes, normalize spaces)
-    const fieldDef = dynamicFields.fields.find((field) => {
+    // Find matching field definition by matching result.key with name/api_name/field_key
+    let fieldDef = dynamicFields.fields.find((field) => {
       if (!field.name) return false;
 
       const normalizedFieldName = field.name
@@ -4631,11 +4662,23 @@ async function renderDynamicFields(dynamicFields) {
       return normalizedFieldName === normalizedResultKey;
     });
 
+    if (!fieldDef) {
+      const normalizedResultKey = normalizeFieldKey(result.key);
+      fieldDef = dynamicFields.fields.find((field) => {
+        const normalizedApiName = normalizeFieldKey(field.api_name || "");
+        const normalizedFieldKey = normalizeFieldKey(field.field_key || "");
+        return (
+          normalizedApiName === normalizedResultKey ||
+          normalizedFieldKey === normalizedResultKey
+        );
+      });
+    }
+
     console.log(`🔍 Found field definition:`, fieldDef);
 
-    if (fieldDef) {
-      // Use the api_name from the matched field definition to look in session data
-      let sessionKey = fieldDef.api_name;
+    if (fieldDef || result.api_name) {
+      // Use field definition api_name when available, else confirmed result api_name.
+      let sessionKey = (fieldDef && fieldDef.api_name) || result.api_name || null;
       const normalizedResultKey = normalizeFieldKey(result.key);
 
       // Fallbacks if api_name is missing or not in session
@@ -4661,15 +4704,17 @@ async function renderDynamicFields(dynamicFields) {
 
       // Display field if it exists in session data (regardless of value - even if empty/null)
       if (sessionKey && session.hasOwnProperty(sessionKey)) {
+        const displayName = (fieldDef && fieldDef.name) || result.key;
+        const displayType = (fieldDef && fieldDef.type) || result.type || "text";
         console.log(
-          `✅ Adding dynamic field: ${fieldDef.name} = ${session[sessionKey]}`
+          `✅ Adding dynamic field: ${displayName} = ${session[sessionKey]}`
         );
         const fieldElement = createDynamicFieldElement(
-          fieldDef.name, // Use the display name from emr-types-fields
+          displayName,
           session[sessionKey] !== null && session[sessionKey] !== undefined
             ? session[sessionKey]
             : "", // Preserve false/0 values for booleans
-          fieldDef.type
+          displayType
         );
         dynamicFieldsSection.appendChild(fieldElement);
         confirmedResultsAdded++;
@@ -4722,18 +4767,24 @@ async function renderDynamicFields(dynamicFields) {
     console.log(`🔍 Looking for field with api_name: ${field.name}`);
 
     // Find matching field definition by matching field.name with name (case-insensitive, remove dashes, normalize spaces)
-    const fieldDef = dynamicFields.fields.find(
+    let fieldDef = dynamicFields.fields.find(
       (f) =>
         f.name &&
         f.name.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim() ===
           field.name.toLowerCase().replace(/-/g, "").replace(/\s+/g, " ").trim()
     );
 
+    if (!fieldDef && field.api_name) {
+      fieldDef = dynamicFields.fields.find(
+        (f) => normalizeFieldKey(f.api_name || "") === normalizeFieldKey(field.api_name)
+      );
+    }
+
     console.log(`🔍 Found field definition:`, fieldDef);
 
-    if (fieldDef) {
-      // Use the api_name from the matched field definition to look in session data
-      const sessionKey = fieldDef.api_name;
+    const sessionKey = (fieldDef && fieldDef.api_name) || field.api_name || null;
+
+    if (sessionKey) {
       console.log(`🔍 Using api_name '${sessionKey}' to look in session data`);
       console.log(
         `🔍 Session has key '${sessionKey}':`,
@@ -4749,15 +4800,17 @@ async function renderDynamicFields(dynamicFields) {
 
       // Display field if it exists in session data (regardless of value - even if empty/null)
       if (session.hasOwnProperty(sessionKey)) {
+        const displayName = (fieldDef && fieldDef.name) || field.name;
+        const displayType = (fieldDef && fieldDef.type) || field.type || "text";
         console.log(
-          `✅ Adding manual field: ${fieldDef.name} = ${session[sessionKey]}`
+          `✅ Adding manual field: ${displayName} = ${session[sessionKey]}`
         );
         const fieldElement = createDynamicFieldElement(
-          fieldDef.name, // Use the display name from emr-types-fields
+          displayName,
           session[sessionKey] !== null && session[sessionKey] !== undefined
             ? session[sessionKey]
             : "", // Preserve false/0 values for booleans
-          fieldDef.type
+          displayType
         );
         dynamicFieldsSection.appendChild(fieldElement);
         
@@ -9634,7 +9687,11 @@ async function loadAddSessionDynamicFields(emrTypeId) {
         }
 
         const fieldMapping = dynamicFields.fieldMapping;
-        let fieldName = fieldMapping[result.key];
+        const mappedFieldInfo = fieldMapping[result.key];
+        let fieldName =
+          mappedFieldInfo && typeof mappedFieldInfo === "object"
+            ? mappedFieldInfo.api_name || mappedFieldInfo.field_key || null
+            : mappedFieldInfo || null;
 
         if (!fieldName && emrField) {
           fieldName = emrField.api_name;
@@ -10292,6 +10349,155 @@ async function findOrCreateSession(
   }
 }
 
+function resolveDetectedClientName(scrapedData, dynamicFields) {
+  const normalizeLookupKey = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/[-_\s]+/g, " ")
+      .trim();
+
+  const getValueByCandidateKeys = (source, candidateKeys = []) => {
+    if (!source || typeof source !== "object") return "";
+
+    for (const key of candidateKeys) {
+      if (!key) continue;
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        return source[key];
+      }
+    }
+
+    const normalizedCandidates = candidateKeys
+      .filter(Boolean)
+      .map((k) => normalizeLookupKey(k));
+
+    const matchedKey = Object.keys(source).find((sourceKey) =>
+      normalizedCandidates.includes(normalizeLookupKey(sourceKey))
+    );
+
+    return matchedKey ? source[matchedKey] : "";
+  };
+
+  const confirmedClientResult = (dynamicFields?.confirmedResults || []).find(
+    (result) => {
+      const keyNorm = normalizeLookupKey(result?.key);
+      return keyNorm === "client" || keyNorm === "client name";
+    }
+  );
+
+  const rawClientValue = getValueByCandidateKeys(scrapedData, [
+    confirmedClientResult?.label,
+    confirmedClientResult?.api_name,
+    confirmedClientResult?.key,
+    "Client",
+    "client",
+    "Client Name",
+    "client_name",
+    "member",
+    "member_name",
+    "patient",
+    "patient_name",
+  ]);
+
+  return (rawClientValue || "").toString().trim();
+}
+
+function mapDetectedValuesToApiNames(scrapedData, dynamicFields) {
+  const mappedValues = {};
+
+  if (!scrapedData || typeof scrapedData !== "object") {
+    return mappedValues;
+  }
+
+  const normalizeLookupKey = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/[-_\s]+/g, " ")
+      .trim();
+
+  const hasProvidedValue = (value) => {
+    if (value === undefined || value === null) return false;
+    if (typeof value === "string") return value.trim() !== "";
+    return true;
+  };
+
+  const getValueByCandidateKeys = (source, candidateKeys = []) => {
+    if (!source || typeof source !== "object") return undefined;
+
+    for (const key of candidateKeys) {
+      if (!key) continue;
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        return source[key];
+      }
+    }
+
+    const normalizedCandidates = candidateKeys
+      .filter(Boolean)
+      .map((k) => normalizeLookupKey(k));
+
+    const matchedKey = Object.keys(source).find((sourceKey) =>
+      normalizedCandidates.includes(normalizeLookupKey(sourceKey))
+    );
+
+    return matchedKey ? source[matchedKey] : undefined;
+  };
+
+  const fields = Array.isArray(dynamicFields?.fields) ? dynamicFields.fields : [];
+  const confirmedResults = Array.isArray(dynamicFields?.confirmedResults)
+    ? dynamicFields.confirmedResults
+    : [];
+
+  for (const field of fields) {
+    const targetApiName = field?.api_name;
+    if (!targetApiName) {
+      continue;
+    }
+
+    const matchedResult = confirmedResults.find((result) => {
+      const resultKey = normalizeLookupKey(result?.key);
+      return (
+        resultKey &&
+        [field?.field_key, field?.api_name, field?.name]
+          .filter(Boolean)
+          .map(normalizeLookupKey)
+          .includes(resultKey)
+      );
+    });
+
+    const resolvedValue = getValueByCandidateKeys(scrapedData, [
+      targetApiName,
+      field?.field_key,
+      field?.name,
+      matchedResult?.api_name,
+      matchedResult?.label,
+      matchedResult?.key,
+    ]);
+
+    if (hasProvidedValue(resolvedValue)) {
+      mappedValues[targetApiName] = resolvedValue;
+    }
+  }
+
+  // Ensure confirmed results with api_name are also preserved even if fields lookup misses.
+  for (const result of confirmedResults) {
+    const targetApiName = result?.api_name;
+    if (!targetApiName || Object.prototype.hasOwnProperty.call(mappedValues, targetApiName)) {
+      continue;
+    }
+
+    const resolvedValue = getValueByCandidateKeys(scrapedData, [
+      result?.api_name,
+      result?.label,
+      result?.key,
+    ]);
+
+    if (hasProvidedValue(resolvedValue)) {
+      mappedValues[targetApiName] = resolvedValue;
+    }
+  }
+
+  return mappedValues;
+}
+
 async function saveDetectedSessionWithoutAINotes() {
   console.log("💾 Saving detected session without AI notes...");
 
@@ -10307,7 +10513,10 @@ async function saveDetectedSessionWithoutAINotes() {
   }
 
   const scrapedData = currentAutoDetectedScrapedData;
-  const clientName = scrapedData.Client || scrapedData.client;
+  const clientName = resolveDetectedClientName(
+    scrapedData,
+    currentAutoDetectedDynamicFields
+  );
   if (!clientName) {
     showErrorMessage("Client name not found");
     throw new Error("Client name not found");
@@ -10374,6 +10583,10 @@ async function saveDetectedSessionWithoutAINotes() {
       updatedScrapedData.Instructions ||
       updatedScrapedData.instructions ||
       "",
+    ...mapDetectedValuesToApiNames(
+      updatedScrapedData,
+      currentAutoDetectedDynamicFields
+    ),
   };
 
   Object.keys(updatedScrapedData).forEach((key) => {
@@ -10484,7 +10697,10 @@ async function handleGenerateAINotesFromDetected() {
 
     const scrapedData = currentAutoDetectedScrapedData;
 
-    const clientName = scrapedData.Client || scrapedData.client;
+    const clientName = resolveDetectedClientName(
+      scrapedData,
+      currentAutoDetectedDynamicFields
+    );
     if (!clientName) {
       showErrorMessage("Client name not found");
       return;
@@ -10555,6 +10771,10 @@ async function handleGenerateAINotesFromDetected() {
         updatedScrapedData.Instructions ||
         updatedScrapedData.instructions ||
         "",
+      ...mapDetectedValuesToApiNames(
+        updatedScrapedData,
+        currentAutoDetectedDynamicFields
+      ),
     };
 
     Object.keys(updatedScrapedData).forEach((key) => {
@@ -11612,7 +11832,11 @@ async function loadSessionDynamicFields(sessionData) {
 
         // Get field name from mapping or EMR field
         const fieldMapping = dynamicFields.fieldMapping;
-        let fieldName = fieldMapping[result.key];
+        const mappedFieldInfo = fieldMapping[result.key];
+        let fieldName =
+          mappedFieldInfo && typeof mappedFieldInfo === "object"
+            ? mappedFieldInfo.api_name || mappedFieldInfo.field_key || null
+            : mappedFieldInfo || null;
         
         // console.log("🔍 fieldMapping[result.key]:", fieldName);
         // console.log("🔍 emrField:", emrField);
@@ -12039,12 +12263,17 @@ async function loadSessionDynamicFields(sessionData) {
           ? modalityStepsField.api_name
           : "modality_step";
 
+        const sessionModalityValue =
+          sessionData[modalityApiName] ?? sessionData.modality ?? "";
+        const sessionModalityStepValue =
+          sessionData[modalityStepsApiName] ?? sessionData.modality_step ?? "";
+
         console.log("🔍 Modality api_name:", modalityApiName);
         console.log("🔍 Modality Steps api_name:", modalityStepsApiName);
-        console.log("🔍 Session modality value:", sessionData[modalityApiName]);
+        console.log("🔍 Session modality value:", sessionModalityValue);
         console.log(
           "🔍 Session modality_step value:",
-          sessionData[modalityStepsApiName]
+          sessionModalityStepValue
         );
 
         // Create Modality dropdown
@@ -12073,14 +12302,31 @@ async function loadSessionDynamicFields(sessionData) {
           option.textContent = modality.name;
           // Pre-select if session has modality value using api_name
           if (
-            sessionData[modalityApiName] &&
-            (sessionData[modalityApiName] == modality.id ||
-              sessionData[modalityApiName] == modality.name)
+            sessionModalityValue &&
+            (sessionModalityValue == modality.id ||
+              sessionModalityValue == modality.name)
           ) {
             option.selected = true;
           }
           modalitySelect.appendChild(option);
         });
+
+        // If modality is missing but modality step exists, infer modality from step.
+        if (!modalitySelect.value && sessionModalityStepValue) {
+          const matchedStep = modalitySteps.find(
+            (step) =>
+              step.id == sessionModalityStepValue ||
+              step.name == sessionModalityStepValue
+          );
+          if (matchedStep?.modality_id != null) {
+            const matchedModalityOption = Array.from(modalitySelect.options).find(
+              (option) => option.value == matchedStep.modality_id
+            );
+            if (matchedModalityOption) {
+              modalitySelect.value = matchedModalityOption.value;
+            }
+          }
+        }
 
         modalityContainer.appendChild(modalityLabel);
         modalityContainer.appendChild(modalitySelect);
@@ -12106,11 +12352,11 @@ async function loadSessionDynamicFields(sessionData) {
         modalityStepsSelect.appendChild(emptyStepsOption);
 
         // If session has modality selected, filter and show steps
-        if (sessionData[modalityApiName]) {
+        if (modalitySelect.value) {
           const filteredSteps = modalitySteps.filter(
             (step) =>
-              step.modality_id === sessionData[modalityApiName] ||
-              step.modality_id == sessionData[modalityApiName]
+              step.modality_id === modalitySelect.value ||
+              step.modality_id == modalitySelect.value
           );
 
           filteredSteps.forEach((step) => {
@@ -12119,9 +12365,9 @@ async function loadSessionDynamicFields(sessionData) {
             option.textContent = step.name;
             // Pre-select if session has modality_step value
             if (
-              sessionData[modalityStepsApiName] &&
-              (sessionData[modalityStepsApiName] == step.id ||
-                sessionData[modalityStepsApiName] == step.name)
+              sessionModalityStepValue &&
+              (sessionModalityStepValue == step.id ||
+                sessionModalityStepValue == step.name)
             ) {
               option.selected = true;
             }
@@ -13978,37 +14224,42 @@ function escapeRegExp(string) {
 // ===============================
 
 // Listen for fillSessionData message from background script
-chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === "fillSessionData") {
     console.log(
       "✅ SessyNote POPUP: Received fillSessionData - Panel is OPEN",
       message.data
     );
 
-    try {
-      // Navigate to Sessions tab
-      navigateToPage("sessions");
+    (async () => {
+      try {
+        // Navigate to Sessions tab
+        navigateToPage("sessions");
 
-      // Wait for page to load
-      await new Promise((resolve) => setTimeout(resolve, 300));
+        // Wait for page to load
+        await new Promise((resolve) => setTimeout(resolve, 300));
 
-      // Trigger auto-fill
-      await autoFillSessionFromScrapedData(message.data);
+        // Trigger auto-fill
+        await autoFillSessionFromScrapedData(message.data);
 
-      console.log("✅ SessyNote POPUP: Auto-fill complete, sending response");
-      sendResponse({ success: true });
-    } catch (error) {
-      console.error("❌ SessyNote POPUP: Error auto-filling session:", error);
-      sendResponse({ success: false, error: error.message });
-    }
+        console.log("✅ SessyNote POPUP: Auto-fill complete, sending response");
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error("❌ SessyNote POPUP: Error auto-filling session:", error);
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
+
+    return true;
   }
 
   if (message.action === "showSavePrompt") {
     console.log("✅ SessyNote POPUP: Received showSavePrompt", message.reason);
     showSaveSessionPrompt(message.reason || "unknown");
     sendResponse({ success: true });
+    return true;
   }
-  return true;
+  return false;
 });
 
 async function autoFillSessionFromScrapedData(data) {
@@ -14078,6 +14329,9 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
   console.log("📊 Scraped data:", scrapedData);
   console.log("📊 EMR Type ID:", emrTypeId);
 
+  // Always start from view mode for a fresh detected session render.
+  resetAutoDetectedEditButtonToEditMode();
+
   // Set button text to "Generate AI Notes" for new auto-detected session
   const autoGenerateButton = document.getElementById("auto-generate-button");
   if (autoGenerateButton) {
@@ -14086,9 +14340,66 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
   }
 
   try {
+    const normalizeLookupKey = (value) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[-_\s]+/g, " ")
+        .trim();
+
+    const getValueByCandidateKeys = (source, candidateKeys = []) => {
+      if (!source || typeof source !== "object") return "";
+      for (const key of candidateKeys) {
+        if (!key) continue;
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+          return source[key];
+        }
+      }
+
+      const normalizedCandidates = candidateKeys
+        .filter(Boolean)
+        .map((k) => normalizeLookupKey(k));
+
+      const matchedKey = Object.keys(source).find((sourceKey) =>
+        normalizedCandidates.includes(normalizeLookupKey(sourceKey))
+      );
+      return matchedKey ? source[matchedKey] : "";
+    };
+
+    // Get EMR type name and dynamic fields
+    const [emrTypeName, dynamicFields] = await Promise.all([
+      getEMRTypeName(emrTypeId),
+      getSessionDetailFields(emrTypeId),
+    ]);
+    console.log("📊 Dynamic fields fetched:", dynamicFields);
+
+    // Resolve client from confirmed-results mapping first:
+    // confirmed result key 'Client' -> its label/api_name -> scrapedData value
+    const confirmedClientResult = (dynamicFields?.confirmedResults || []).find(
+      (result) => {
+        const keyNorm = normalizeLookupKey(result?.key);
+        return keyNorm === "client" || keyNorm === "client name";
+      }
+    );
+
+    let clientName = getValueByCandidateKeys(scrapedData, [
+      confirmedClientResult?.label,
+      confirmedClientResult?.api_name,
+      confirmedClientResult?.key,
+      "Client",
+      "client",
+      "client_name",
+      "member",
+      "member_name",
+      "patient",
+      "patient_name",
+    ]);
+
+    if (clientName === null || clientName === undefined) {
+      clientName = "";
+    }
+
     // Find client ID by name (optional - we no longer block if not found)
-    const clientName = scrapedData.Client || scrapedData.client;
-    const clientId = await findClientIdByName(clientName);
+    const clientId = clientName ? await findClientIdByName(clientName) : null;
 
     if (!clientId) {
       console.warn(
@@ -14096,13 +14407,6 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
         clientName
       );
     }
-
-    // Get EMR type name
-    const emrTypeName = await getEMRTypeName(emrTypeId);
-
-    // Fetch dynamic fields for this EMR type
-    const dynamicFields = await getSessionDetailFields(emrTypeId);
-    console.log("📊 Dynamic fields fetched:", dynamicFields);
 
     // Store globally for edit mode access
     currentAutoDetectedDynamicFields = dynamicFields;
@@ -14187,27 +14491,57 @@ async function populateAutoDetectedSessionPage(scrapedData, emrTypeId) {
       console.log(`🔍 Field definition for '${result.key}':`, fieldDef);
 
       if (fieldDef) {
-        // Get the api_name to look up value in scraped data
-        const fieldMapping = dynamicFields.fieldMapping;
-        let apiName = fieldMapping[result.key];
+        const apiName = result.api_name || fieldDef.api_name || null;
 
-        if (!apiName && fieldDef) {
-          apiName = fieldDef.api_name;
+        // Step 1: try result.label (EMR page label = AI object key)
+        // Step 2: try api_name
+        // Step 3: try result.key
+        let fieldValue = "";
+        const normalizeKey = (k) => (k || "").toLowerCase().replace(/[-_\s]+/g, " ").trim();
+
+        if (result.label) {
+          // Try exact label match first
+          if (scrapedData.hasOwnProperty(result.label)) {
+            fieldValue = scrapedData[result.label];
+            console.log(`🔍 Value found via exact label match '${result.label}':`, fieldValue);
+          } else {
+            // Try normalized label match
+            const normalizedLabel = normalizeKey(result.label);
+            const matchedKey = Object.keys(scrapedData).find(
+              (k) => normalizeKey(k) === normalizedLabel
+            );
+            if (matchedKey) {
+              fieldValue = scrapedData[matchedKey];
+              console.log(`🔍 Value found via normalized label match '${result.label}' -> '${matchedKey}':`, fieldValue);
+            }
+          }
         }
 
-        console.log(
-          `🔍 Using api_name '${apiName}' to get value from scraped data`
-        );
+        // Fallback: api_name
+        if (!fieldValue && apiName && scrapedData.hasOwnProperty(apiName)) {
+          fieldValue = scrapedData[apiName];
+          console.log(`🔍 Value found via api_name '${apiName}':`, fieldValue);
+        }
 
-        // Get value from scraped data using api_name, or empty if not present
-        const fieldValue =
-          apiName && scrapedData.hasOwnProperty(apiName)
-            ? scrapedData[apiName]
-            : "";
-        console.log(
-          `✅ Creating field '${result.key}' with value:`,
-          fieldValue
-        );
+        // Fallback: result.key
+        if (!fieldValue && result.key && scrapedData.hasOwnProperty(result.key)) {
+          fieldValue = scrapedData[result.key];
+          console.log(`🔍 Value found via result.key '${result.key}':`, fieldValue);
+        }
+
+        // Fallback: normalized result.key
+        if (!fieldValue) {
+          const normalizedResultKey = normalizeKey(result.key);
+          const matchedKey = Object.keys(scrapedData).find(
+            (k) => normalizeKey(k) === normalizedResultKey
+          );
+          if (matchedKey) {
+            fieldValue = scrapedData[matchedKey];
+            console.log(`🔍 Value found via normalized key match '${result.key}' -> '${matchedKey}':`, fieldValue);
+          }
+        }
+
+        console.log(`✅ Creating field '${result.key}' (label: '${result.label}', api_name: '${apiName}') with value:`, fieldValue);
 
         // In view mode on the auto-detected session page, show plain text (no input boxes)
         const fieldElement = createAutoSessionViewFieldElement(
@@ -14921,13 +15255,38 @@ function parseDate(dateString) {
   if (!dateString) return null;
 
   try {
-    // Remove day name if present ("Tuesday 09-30-2025" -> "09-30-2025")
-    const cleaned = dateString.replace(/^\w+\s+/, "");
+    const raw = String(dateString).trim();
+    const cleaned = raw
+      // Remove weekday in parentheses (Mon), (Monday), etc.
+      .replace(/\([^)]*\)/g, " ")
+      // Remove leading weekday words like "Tuesday "
+      .replace(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b[\s,:-]*/i, "")
+      // Collapse whitespace
+      .replace(/\s+/g, " ")
+      .trim();
 
-    // Try parsing as Date
+    // Prefer explicit numeric patterns to avoid browser Date parsing ambiguity.
+    // 1) YYYY-MM-DD or YYYY/MM/DD
+    let match = cleaned.match(/\b(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+    if (match) {
+      const year = match[1];
+      const month = String(match[2]).padStart(2, "0");
+      const day = String(match[3]).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
+    // 2) MM-DD-YYYY or MM/DD/YYYY
+    match = cleaned.match(/\b(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})\b/);
+    if (match) {
+      const month = String(match[1]).padStart(2, "0");
+      const day = String(match[2]).padStart(2, "0");
+      const year = match[3];
+      return `${year}-${month}-${day}`;
+    }
+
+    // Fallback to Date parsing as last resort
     const date = new Date(cleaned);
     if (!isNaN(date.getTime())) {
-      // Format as YYYY-MM-DD
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, "0");
       const day = String(date.getDate()).padStart(2, "0");
@@ -14948,7 +15307,40 @@ function parseDateTime(dateTimeString) {
   if (!dateTimeString) return null;
 
   try {
-    const date = new Date(dateTimeString);
+    const raw = String(dateTimeString).trim();
+    const cleaned = raw
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b[\s,:-]*/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // Extract date first
+    const datePart = parseDate(cleaned);
+
+    // Extract time (supports HH:MM, HH:MM:SS, optional AM/PM)
+    const timeMatch = cleaned.match(/\b(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM|am|pm)?\b/);
+
+    let hour = "00";
+    let minute = "00";
+
+    if (timeMatch) {
+      let h = parseInt(timeMatch[1], 10);
+      const m = parseInt(timeMatch[2], 10);
+      const ampm = (timeMatch[3] || "").toUpperCase();
+
+      if (ampm === "PM" && h < 12) h += 12;
+      if (ampm === "AM" && h === 12) h = 0;
+
+      hour = String(h).padStart(2, "0");
+      minute = String(m).padStart(2, "0");
+    }
+
+    if (datePart) {
+      return `${datePart}T${hour}:${minute}`;
+    }
+
+    // Fallback to native Date parsing
+    const date = new Date(cleaned);
     if (!isNaN(date.getTime())) {
       const year = date.getFullYear();
       const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -14957,6 +15349,7 @@ function parseDateTime(dateTimeString) {
       const minutes = String(date.getMinutes()).padStart(2, "0");
       return `${year}-${month}-${day}T${hours}:${minutes}`;
     }
+
     return null;
   } catch (error) {
     console.error("SessyNote: Error parsing datetime:", error);
