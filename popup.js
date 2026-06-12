@@ -177,8 +177,8 @@ async function handleSaveSessionPromptNo() {
 }
 
 // API Configuration - Your actual server URL
-//const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
-const API_BASE_URL =  "http://localhost:8001/api/v1"
+const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
+//const API_BASE_URL =  "http://localhost:8001/api/v1"
 // Handle 401 Unauthorized errors (token expired)
 function handle401Error() {
   console.log("⚠️ Token expired or invalid - logging out user");

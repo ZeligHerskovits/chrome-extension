@@ -2,8 +2,8 @@
 // This captures the current tab's HTML, CSS, and data and downloads it as a standalone HTML file
 
 // API Base URL
-//const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
-const API_BASE_URL =  "http://localhost:8001/api/v1"
+const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
+//const API_BASE_URL =  "http://localhost:8001/api/v1"
 const AI_VISION_ENDPOINT_STORAGE_KEY = "aiVisionExtractionUrl";
 const AI_VISION_API_KEY_STORAGE_KEY = "aiVisionApiKey";
 const DEFAULT_AI_VISION_ENDPOINT = `${API_BASE_URL}/extract-session`;
