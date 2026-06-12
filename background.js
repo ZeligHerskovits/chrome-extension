@@ -2,8 +2,8 @@
 // This captures the current tab's HTML, CSS, and data and downloads it as a standalone HTML file
 
 // API Base URL
-const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
-//const API_BASE_URL =  "http://localhost:8001/api/v1"
+//const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
+const API_BASE_URL =  "http://localhost:8001/api/v1"
 const AI_VISION_ENDPOINT_STORAGE_KEY = "aiVisionExtractionUrl";
 const AI_VISION_API_KEY_STORAGE_KEY = "aiVisionApiKey";
 const DEFAULT_AI_VISION_ENDPOINT = `${API_BASE_URL}/extract-session`;
@@ -528,18 +528,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sidePanelState.set(windowId, false);
             console.log("SessyNote: Side panel closed");
             chrome.tabs.sendMessage(tabs[0].id, { action: "sidePanelClosed" });
+            sendResponse({ success: true, isOpen: false });
           } else {
             // Open the side panel
             await chrome.sidePanel.open({ windowId: windowId });
             sidePanelState.set(windowId, true);
             console.log("SessyNote: Side panel opened successfully");
             chrome.tabs.sendMessage(tabs[0].id, { action: "sidePanelOpened" });
+            sendResponse({ success: true, isOpen: true });
           }
         } catch (error) {
           console.error("SessyNote: Error toggling side panel:", error);
+          sendResponse({ success: false, error: error.message });
         }
       } else {
         console.error("SessyNote: No active tab found");
+        sendResponse({ success: false, error: "No active tab found" });
       }
     });
     return true;

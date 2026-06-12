@@ -177,8 +177,8 @@ async function handleSaveSessionPromptNo() {
 }
 
 // API Configuration - Your actual server URL
-const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
-//const API_BASE_URL =  "http://localhost:8001/api/v1"
+//const API_BASE_URL = "https://noteddevapi.objectif.solutions/api/v1";
+const API_BASE_URL =  "http://localhost:8001/api/v1"
 // Handle 401 Unauthorized errors (token expired)
 function handle401Error() {
   console.log("⚠️ Token expired or invalid - logging out user");
@@ -10666,6 +10666,198 @@ async function saveDetectedSessionWithoutAINotes() {
   return sessionDetails;
 }
 
+async function fetchEmrTypeFieldResponses(emrTypeId, accessToken) {
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/emr-type-field-responses?emr_type_id=${encodeURIComponent(
+        emrTypeId
+      )}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    if (response.status === 401) {
+      handle401Error();
+      return [];
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch field responses: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const mappings = Array.isArray(data) ? data : [];
+    console.log("SessyNote: emr-type-field-responses fetched:", {
+      emrTypeId,
+      count: mappings.length,
+      mappings,
+    });
+    return mappings;
+  } catch (error) {
+    console.error("❌ Error fetching emr-type-field-responses:", error);
+    return [];
+  }
+}
+
+function resolveAiSectionTextForMappingToken(mappingToken, sessionDetails) {
+  const token = String(mappingToken || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+  const methodsText = sessionDetails?.methods_response || "";
+  const progressText = sessionDetails?.progress_towards_goal_response || "";
+  const recommendedText = sessionDetails?.recommended_changes_response || "";
+
+  if (!token) return "";
+
+  if (
+    token === "response 1" ||
+    token === "section 1" ||
+    token === "1" ||
+    token.includes("methods")
+  ) {
+    return methodsText;
+  }
+
+  if (
+    token === "response 2" ||
+    token === "section 2" ||
+    token === "2" ||
+    token.includes("progress") ||
+    token.includes("goal")
+  ) {
+    return progressText;
+  }
+
+  if (
+    token === "response 3" ||
+    token === "section 3" ||
+    token === "3" ||
+    token.includes("recommended") ||
+    token.includes("change")
+  ) {
+    return recommendedText;
+  }
+
+  return "";
+}
+
+function buildAiToEmrAssignments(fieldResponseMappings, sessionDetails) {
+  if (!Array.isArray(fieldResponseMappings) || !sessionDetails) {
+    return [];
+  }
+
+  const assignments = [];
+
+  fieldResponseMappings.forEach((mapping) => {
+    const fieldName = (mapping?.field_name || "").toString().trim();
+    const responseToken = (mapping?.response_value || "").toString().trim();
+    if (!fieldName || !responseToken) {
+      console.log("SessyNote: Skipping malformed mapping:", mapping);
+      return;
+    }
+
+    const aiText = resolveAiSectionTextForMappingToken(
+      responseToken,
+      sessionDetails
+    );
+    if (!aiText || !String(aiText).trim()) {
+      console.log("SessyNote: Mapping resolved to empty AI text:", {
+        fieldName,
+        responseToken,
+      });
+      return;
+    }
+
+    assignments.push({
+      fieldName,
+      value: String(aiText),
+      responseToken,
+    });
+
+    console.log("SessyNote: Built AI->EMR assignment:", {
+      fieldName,
+      responseToken,
+      valuePreview: String(aiText).slice(0, 120),
+    });
+  });
+
+  console.log("SessyNote: Final AI->EMR assignments:", assignments);
+  return assignments;
+}
+
+async function applyAiResponsesToOpenEmrPage(emrTypeId, sessionDetails, accessToken) {
+  try {
+    if (!emrTypeId || !sessionDetails || !accessToken) {
+      return;
+    }
+
+    const mappings = await fetchEmrTypeFieldResponses(emrTypeId, accessToken);
+    if (!mappings.length) {
+      console.log(
+        "ℹ️ No emr-type-field-responses mappings found for EMR type:",
+        emrTypeId
+      );
+      return;
+    }
+
+    const assignments = buildAiToEmrAssignments(mappings, sessionDetails);
+    if (!assignments.length) {
+      console.log(
+        "ℹ️ Field mappings found but no AI section text matched response_value tokens"
+      );
+      return;
+    }
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      const activeTab = tabs && tabs[0] ? tabs[0] : null;
+      if (!activeTab?.id) {
+        console.warn("⚠️ No active tab found for EMR AI autofill");
+        return;
+      }
+
+      console.log("SessyNote: Active tab for AI autofill:", {
+        tabId: activeTab.id,
+        url: activeTab.url,
+        title: activeTab.title,
+        emrTypeId,
+        assignmentCount: assignments.length,
+      });
+
+      chrome.tabs.sendMessage(
+        activeTab.id,
+        {
+          action: "applyAiResponsesToEmrFields",
+          assignments,
+          emrTypeId,
+        },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            console.warn(
+              "⚠️ EMR AI autofill message failed:",
+              chrome.runtime.lastError.message
+            );
+            return;
+          }
+
+          console.log("✅ EMR AI autofill response:", response || {});
+          if (response?.details) {
+            console.log("SessyNote: EMR AI autofill details:", response.details);
+          }
+        }
+      );
+    });
+  } catch (error) {
+    console.error("❌ Failed to apply AI responses to open EMR page:", error);
+  }
+}
+
 // Main handler for Generate AI Notes from detected session
 async function handleGenerateAINotesFromDetected() {
   console.log("🚀 Function called!");
@@ -10923,6 +11115,13 @@ async function handleGenerateAINotesFromDetected() {
         }
 
         showSuccessMessage("AI Notes generated successfully!");
+
+        // After AI notes are visible, auto-fill configured EMR fields on the open page.
+        applyAiResponsesToOpenEmrPage(
+          sessionDetails.emr_type_id,
+          sessionDetails,
+          tokenResult.accessToken
+        );
       }, 300);
     });
   } catch (error) {

@@ -119,7 +119,7 @@
             if (chrome.runtime.lastError) {
               console.error(
                 "SessyNote: Error sending message:",
-                chrome.runtime.lastError
+                chrome.runtime.lastError.message || chrome.runtime.lastError
               );
             } else {
               console.log("SessyNote: Message sent successfully");
@@ -368,6 +368,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (typeof sendResponse === "function") {
       sendResponse({ success: false, manualOnly: true });
     }
+    return true;
+  }
+
+  if (message.action === "applyAiResponsesToEmrFields") {
+    const assignments = Array.isArray(message.assignments)
+      ? message.assignments
+      : [];
+
+    const result = applyAiResponsesToEmrFields(assignments);
+
+    if (result.filled > 0) {
+      showDetectionStatus(
+        `Filled ${result.filled}/${result.total} EMR field(s) from AI notes.`,
+        "success",
+        { duration: 4200 }
+      );
+    } else {
+      showDetectionStatus(
+        "Could not match EMR fields for AI autofill.",
+        "warning",
+        { duration: 4200 }
+      );
+    }
+
+    if (typeof sendResponse === "function") {
+      sendResponse({ success: true, ...result });
+    }
+
     return true;
   }
 });
@@ -892,6 +920,405 @@ function normalizeLabelText(value) {
     .trim();
 }
 
+function dispatchFormUpdateEvents(element) {
+  if (!element) return;
+
+  ["input", "change", "blur"].forEach((eventName) => {
+    try {
+      element.dispatchEvent(new Event(eventName, { bubbles: true }));
+    } catch (e) {
+      // Ignore dispatch errors for non-standard controls
+    }
+  });
+}
+
+function setNativeFieldValue(element, value) {
+  if (!element) return;
+
+  const stringValue = value == null ? "" : String(value);
+  const tagName = (element.tagName || "").toUpperCase();
+
+  if (tagName === "INPUT") {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value"
+    );
+    if (descriptor?.set) {
+      descriptor.set.call(element, stringValue);
+    } else {
+      element.value = stringValue;
+    }
+    return;
+  }
+
+  if (tagName === "TEXTAREA") {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value"
+    );
+    if (descriptor?.set) {
+      descriptor.set.call(element, stringValue);
+    } else {
+      element.value = stringValue;
+    }
+    return;
+  }
+
+  if (tagName === "SELECT") {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      window.HTMLSelectElement.prototype,
+      "value"
+    );
+    if (descriptor?.set) {
+      descriptor.set.call(element, stringValue);
+    } else {
+      element.value = stringValue;
+    }
+    return;
+  }
+
+  if (element.isContentEditable || element.getAttribute("contenteditable") === "true") {
+    element.textContent = stringValue;
+  }
+}
+
+function isEditableFieldElement(element) {
+  if (!element) return false;
+  if (element.disabled) return false;
+
+  const tagName = (element.tagName || "").toUpperCase();
+  if (tagName === "INPUT" || tagName === "TEXTAREA" || tagName === "SELECT") {
+    return true;
+  }
+
+  if (element.isContentEditable) return true;
+  if (element.getAttribute && element.getAttribute("contenteditable") === "true") {
+    return true;
+  }
+
+  return false;
+}
+
+function isVisibleEditableField(element) {
+  if (!isEditableFieldElement(element)) return false;
+
+  try {
+    const rect = element.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+
+    const style = window.getComputedStyle(element);
+    if (!style) return false;
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity || "1") === 0) return false;
+
+    return true;
+  } catch (error) {
+    return true;
+  }
+}
+
+function getEditableFieldPriority(element) {
+  if (!isEditableFieldElement(element)) return 0;
+
+  const tagName = (element.tagName || "").toUpperCase();
+  const inputType = (element.type || "text").toLowerCase();
+
+  if (tagName === "TEXTAREA") return 100;
+  if (element.isContentEditable || element.getAttribute?.("contenteditable") === "true") {
+    return 95;
+  }
+  if (tagName === "INPUT" && inputType === "text") return 90;
+  if (tagName === "INPUT") return 70;
+  if (tagName === "SELECT") return 60;
+
+  return 50;
+}
+
+function isFollowingNode(referenceNode, candidateNode) {
+  if (!referenceNode || !candidateNode || referenceNode === candidateNode) {
+    return false;
+  }
+
+  try {
+    return Boolean(
+      referenceNode.compareDocumentPosition(candidateNode) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    );
+  } catch (error) {
+    return false;
+  }
+}
+
+function pickNearestEditableField(labelElement, candidates) {
+  const visibleCandidates = (candidates || []).filter(isVisibleEditableField);
+  if (!visibleCandidates.length) {
+    return (candidates || []).find(isEditableFieldElement) || null;
+  }
+
+  const followingCandidates = visibleCandidates.filter((candidate) =>
+    isFollowingNode(labelElement, candidate)
+  );
+
+  if (followingCandidates.length) {
+    return followingCandidates[0];
+  }
+
+  return visibleCandidates[0];
+}
+
+function setEditableFieldValue(element, value) {
+  if (!element || !isEditableFieldElement(element)) {
+    return false;
+  }
+
+  const stringValue = value == null ? "" : String(value);
+  const tagName = (element.tagName || "").toUpperCase();
+
+  if (tagName === "SELECT") {
+    const options = Array.from(element.options || []);
+    const normalizedTarget = normalizeLabelText(stringValue);
+
+    const matchingOption = options.find((option) => {
+      const optionValue = normalizeLabelText(option.value || "");
+      const optionText = normalizeLabelText(option.textContent || "");
+      return optionValue === normalizedTarget || optionText === normalizedTarget;
+    });
+
+    if (!matchingOption) {
+      return false;
+    }
+
+    setNativeFieldValue(element, matchingOption.value);
+    dispatchFormUpdateEvents(element);
+    return true;
+  }
+
+  if (tagName === "INPUT") {
+    const inputType = (element.type || "text").toLowerCase();
+    if (inputType === "checkbox" || inputType === "radio") {
+      const normalized = normalizeLabelText(stringValue);
+      element.checked = ["true", "yes", "1", "on", "checked"].includes(normalized);
+    } else {
+      setNativeFieldValue(element, stringValue);
+    }
+    dispatchFormUpdateEvents(element);
+    return true;
+  }
+
+  if (tagName === "TEXTAREA") {
+    setNativeFieldValue(element, stringValue);
+    dispatchFormUpdateEvents(element);
+    return true;
+  }
+
+  // contenteditable fallback
+  if (element.isContentEditable || element.getAttribute("contenteditable") === "true") {
+    setNativeFieldValue(element, stringValue);
+    dispatchFormUpdateEvents(element);
+    return true;
+  }
+
+  return false;
+}
+
+function findEditableFieldNearLabel(labelElement) {
+  if (!labelElement) return null;
+
+  const directForId =
+    labelElement.getAttribute && labelElement.getAttribute("for");
+  if (directForId) {
+    const linked = document.getElementById(directForId);
+    if (isEditableFieldElement(linked)) return linked;
+  }
+
+  const directSelf = labelElement.matches?.(
+    "input, textarea, select, [contenteditable='true']"
+  )
+    ? labelElement
+    : null;
+  if (isVisibleEditableField(directSelf)) {
+    return directSelf;
+  }
+
+  const nearbySelectors =
+    "input, textarea, select, [contenteditable='true'], [role='textbox']";
+
+  if (labelElement.nextElementSibling) {
+    const siblingCandidates = [
+      labelElement.nextElementSibling.matches?.(nearbySelectors)
+        ? labelElement.nextElementSibling
+        : null,
+      ...Array.from(
+        labelElement.nextElementSibling.querySelectorAll?.(nearbySelectors) || []
+      ),
+    ].filter(Boolean);
+    const siblingField = pickNearestEditableField(labelElement, siblingCandidates);
+    if (siblingField) return siblingField;
+  }
+
+  if (labelElement.parentElement) {
+    const parentCandidates = Array.from(
+      labelElement.parentElement.querySelectorAll(nearbySelectors)
+    );
+    const parentField = pickNearestEditableField(labelElement, parentCandidates);
+    if (parentField) return parentField;
+  }
+
+  const rowLike = labelElement.closest?.(
+    "tr, .detail-item, .session-detail-item, .form-group, .input-group, li, .slds-form-element, .field-row, .row"
+  );
+  if (rowLike) {
+    const rowCandidates = Array.from(rowLike.querySelectorAll(nearbySelectors));
+    const rowField = pickNearestEditableField(labelElement, rowCandidates);
+    if (rowField) return rowField;
+  }
+
+  return null;
+}
+
+function findEditableFieldByLabelText(labelText, root = document) {
+  const normalizedLabel = normalizeLabelText(labelText);
+  if (!normalizedLabel) return null;
+
+  const selector = [
+    "label",
+    "span",
+    "div",
+    "td",
+    "th",
+    "p",
+    "strong",
+    "b",
+    "li",
+    ".detail-label",
+    ".field-label",
+    ".label",
+    "[aria-label]",
+    "[data-label]",
+  ].join(", ");
+
+  const elements = Array.from(root.querySelectorAll(selector));
+
+  for (const element of elements) {
+    const elementLabel = normalizeLabelText(
+      element.getAttribute?.("aria-label") ||
+        element.getAttribute?.("data-label") ||
+        element.textContent ||
+        ""
+    );
+
+    if (!elementLabel) continue;
+
+    const isMatch =
+      elementLabel === normalizedLabel ||
+      elementLabel.startsWith(`${normalizedLabel} `) ||
+      elementLabel.includes(`${normalizedLabel}:`) ||
+      elementLabel.includes(` ${normalizedLabel} `);
+
+    if (!isMatch) continue;
+
+    const fieldElement = findEditableFieldNearLabel(element);
+    if (isEditableFieldElement(fieldElement)) {
+      return fieldElement;
+    }
+  }
+
+  return null;
+}
+
+function applyAiResponsesToEmrFields(assignments) {
+  const result = {
+    total: Array.isArray(assignments) ? assignments.length : 0,
+    filled: 0,
+    missing: [],
+    details: [],
+  };
+
+  if (!Array.isArray(assignments) || !assignments.length) {
+    console.log("SessyNote: No AI autofill assignments received.");
+    return result;
+  }
+
+  console.log("SessyNote: Applying AI autofill assignments:", assignments);
+
+  assignments.forEach((assignment) => {
+    const fieldName = (assignment?.fieldName || "").toString().trim();
+    const value = assignment?.value;
+
+    if (!fieldName) {
+      result.details.push({
+        fieldName: "",
+        status: "skipped",
+        reason: "Missing fieldName in assignment",
+      });
+      return;
+    }
+
+    const valuePreview = (value == null ? "" : String(value)).slice(0, 120);
+
+    console.log("SessyNote: Looking for field by label:", {
+      fieldName,
+      valuePreview,
+    });
+
+    const targetField = findEditableFieldByLabelText(fieldName, document);
+    if (!targetField) {
+      console.warn("SessyNote: No editable field matched label:", fieldName);
+      result.missing.push(fieldName);
+      result.details.push({
+        fieldName,
+        status: "missing",
+        reason: "No editable field matched the label",
+        valuePreview,
+      });
+      return;
+    }
+
+    console.log("SessyNote: Matched editable field:", describeEditableElement(targetField));
+
+    const filled = setEditableFieldValue(targetField, value);
+    if (filled) {
+      result.filled += 1;
+      const finalValue = getElementFieldValue(targetField);
+      const matches = normalizeLabelText(finalValue) === normalizeLabelText(value);
+
+      console.log("SessyNote: Field filled successfully:", {
+        fieldName,
+        finalValue,
+        matchesExpectedValue: matches,
+      });
+
+      result.details.push({
+        fieldName,
+        status: matches ? "filled" : "filled-but-mismatch",
+        reason: matches
+          ? "Value set and verified"
+          : "Value was set, but the element value does not match after write",
+        targetField: describeEditableElement(targetField),
+        valuePreview,
+        finalValue,
+      });
+    } else {
+      console.warn("SessyNote: Failed to set field value:", {
+        fieldName,
+        targetField: describeEditableElement(targetField),
+      });
+      result.missing.push(fieldName);
+      result.details.push({
+        fieldName,
+        status: "missing",
+        reason: "Field was matched, but the value could not be set",
+        targetField: describeEditableElement(targetField),
+        valuePreview,
+      });
+    }
+  });
+
+  console.log("SessyNote: AI autofill result summary:", result);
+
+  return result;
+}
+
 function formatFieldNameForLabelLookup(value) {
   return (value || "")
     .toString()
@@ -961,6 +1388,21 @@ function getElementFieldValue(element) {
   }
 
   return (element.textContent || "").trim();
+}
+
+function describeEditableElement(element) {
+  if (!element) return null;
+
+  return {
+    tagName: element.tagName || "",
+    id: element.id || "",
+    name: element.name || "",
+    type: element.type || "",
+    placeholder: element.getAttribute?.("placeholder") || "",
+    ariaLabel: element.getAttribute?.("aria-label") || "",
+    className: element.className || "",
+    value: getElementFieldValue(element),
+  };
 }
 
 function isMeaningfulExtractedValue(value, normalizedLabel = "") {
@@ -1123,7 +1565,6 @@ function findValueByLabelCandidates(fieldConfig, root = document) {
       }
     }
   }
-
   return { value: "", selectorUsed: null };
 }
 
@@ -1133,6 +1574,7 @@ function buildLiveBodyHtmlSnapshot() {
 
   // Clone first so we can inject runtime form state without mutating the live page.
   const snapshotBody = liveBody.cloneNode(true);
+
   const liveFields = liveBody.querySelectorAll("input, textarea, select");
   const snapshotFields = snapshotBody.querySelectorAll("input, textarea, select");
 
@@ -1141,7 +1583,6 @@ function buildLiveBodyHtmlSnapshot() {
     if (!snapshotField) return;
 
     const tagName = (liveField.tagName || "").toUpperCase();
-
     if (tagName === "INPUT") {
       const inputType = (liveField.type || "text").toLowerCase();
       if (inputType === "checkbox" || inputType === "radio") {
