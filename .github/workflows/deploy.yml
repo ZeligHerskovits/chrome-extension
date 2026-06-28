@@ -1,0 +1,67 @@
+name: Build and Deploy Chrome Extension
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install dependencies
+        run: |
+          npm install -g chrome-webstore-upload-cli
+          sudo apt-get update && sudo apt-get install -y jq zip
+
+      - name: Auto bump version
+        run: |
+          CURRENT_VERSION=$(jq -r '.version' manifest.json)
+          IFS='.' read -r major minor patch <<< "$CURRENT_VERSION"
+          NEW_PATCH=$((patch + 1))
+          NEW_VERSION="$major.$minor.$NEW_PATCH"
+
+          jq --arg version "$NEW_VERSION" '.version = $version' manifest.json > manifest.tmp.json
+          mv manifest.tmp.json manifest.json
+
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Commit version bump
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+
+          git add manifest.json
+          git commit -m "[skip ci] bump version to $NEW_VERSION" || echo "No changes"
+          git push origin main --no-verify
+
+      - name: Create extension zip
+        run: |
+          zip -r extension.zip . \
+            -x "*.git*" \
+            "node_modules/*" \
+            ".github/*" \
+            "*.md" \
+            "package*.json"
+
+      - name: Upload to Chrome Web Store
+        continue-on-error: true
+        run: |
+          npx chrome-webstore-upload-cli upload \
+            --source extension.zip \
+            --extension-id ${{ secrets.EXTENSION_ID }} \
+            --client-id ${{ secrets.CLIENT_ID }} \
+            --client-secret ${{ secrets.CLIENT_SECRET }} \
+            --refresh-token ${{ secrets.REFRESH_TOKEN }} \
+            --auto-publish
