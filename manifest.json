@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SessyNote",
-  "version": "2.1.9",
+  "version": "2.1.10",
   "description": "A Chrome extension for capturing complete web pages with all resources",
   "short_name": "SessyNote",
   "permissions": [
