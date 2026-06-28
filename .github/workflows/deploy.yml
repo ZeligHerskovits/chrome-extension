@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+# 🔐 IMPORTANT: allows git push from Actions
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,11 +24,12 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install dependencies
+      - name: Install tools
         run: |
           npm install -g chrome-webstore-upload-cli
           sudo apt-get update && sudo apt-get install -y jq zip
 
+      # 📦 Bump version safely
       - name: Auto bump version
         run: |
           CURRENT_VERSION=$(jq -r '.version' manifest.json)
@@ -37,6 +42,7 @@ jobs:
 
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
+      # 🔁 Commit back to repo
       - name: Commit version bump
         run: |
           git config user.email "github-actions@github.com"
@@ -44,8 +50,9 @@ jobs:
 
           git add manifest.json
           git commit -m "[skip ci] bump version to $NEW_VERSION" || echo "No changes"
-          git push origin main --no-verify
+          git push origin HEAD:main
 
+      # 📦 Build ZIP
       - name: Create extension zip
         run: |
           zip -r extension.zip . \
@@ -55,6 +62,7 @@ jobs:
             "*.md" \
             "package*.json"
 
+      # 🚀 Upload to Chrome Web Store
       - name: Upload to Chrome Web Store
         continue-on-error: true
         run: |
