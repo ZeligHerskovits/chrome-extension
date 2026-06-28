@@ -231,7 +231,7 @@
       if (!matchedConfig?.emrTypeId) {
         showDetectionStatus("Detection canceled. No EMR type selected.", "warning");
         return;
-      }
+      } 
 
       activeEmrConfig = matchedConfig;
 
